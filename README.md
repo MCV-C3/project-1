@@ -11,8 +11,8 @@
 
 **Create Environment:**
 ```bash
-conda create -n C4_Team1 python=3.8
-conda activate C4_Team1
+conda create -n C3_Team1 python=3.8
+conda activate C3_Team1
 ```
 **Install Packages:**
 ```bash
