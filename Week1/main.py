@@ -110,8 +110,8 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
 
 if __name__ == "__main__":
      #/home/cboned/data/Master/MIT_split
-    data_train = Dataset(ImageFolder="/home/cboned/data/Master/MIT_split/train")
-    data_test = Dataset(ImageFolder="/home/cboned/data/Master/MIT_split/test") 
+    data_train = Dataset(ImageFolder="../places_reduced/train")
+    data_test = Dataset(ImageFolder="../places_reduced//test") 
 
     bovw = BOVW()
     
