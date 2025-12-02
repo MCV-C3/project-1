@@ -40,8 +40,10 @@ def test(dataset: List[Tuple[Type[Image.Image], int]]
     print("predicting the values")
     y_pred = classifier.predict(bovw_histograms)
     
-    print("Accuracy on Phase[Test]:", accuracy_score(y_true=descriptors_labels, y_pred=y_pred))
-    
+    acc = accuracy_score(y_true=descriptors_labels, y_pred=y_pred)
+    print("Accuracy on Phase[Test]:", acc)
+    return acc
+
 
 def train(dataset: List[Tuple[Type[Image.Image], int]],
            bovw:Type[BOVW]):
