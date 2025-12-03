@@ -10,6 +10,7 @@ import os
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
+from sklearn.model_selection import GridSearchCV
 
 
 
@@ -62,11 +63,25 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
 
     print("Computing the bovw histograms")
     bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw) 
+    X_train = bovw_histograms
+    y_train = all_labels
     
-    print("Fitting the classifier")
-    classifier = LogisticRegression(class_weight="balanced").fit(bovw_histograms, all_labels)
-
-    print("Accuracy on Phase[Train]:", accuracy_score(y_true=all_labels, y_pred=classifier.predict(bovw_histograms)))
+    base_classifier = LogisticRegression(class_weight="balanced", solver="lbfgs")
+    param_grid = {
+        'C': [0.01, 0.1, 1, 10, 100],
+        'max_iter': [100, 200, 500],
+    }
+    
+    grid_search = GridSearchCV(estimator=base_classifier, param_grid=param_grid, cv=5, scoring='accuracy')
+    grid_search.fit(X_train, y_train)
+    
+    classifier = grid_search.best_estimator_
+    
+    print("Best Hyperparameters:", grid_search.best_params_)
+    print(f"Best Cross-Validation Accuracy on training: {grid_search.best_score_}")
+    # print("Fitting the classifier")
+    # classifier = LogisticRegression(class_weight="balanced").fit(bovw_histograms, all_labels)
+    #print("Accuracy on Phase[Train]:", accuracy_score(y_true=all_labels, y_pred=classifier.predict(bovw_histograms)))
     
     return bovw, classifier
 
@@ -111,7 +126,7 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
 if __name__ == "__main__":
      #/home/cboned/data/Master/MIT_split
     data_train = Dataset(ImageFolder="../places_reduced/train")
-    data_test = Dataset(ImageFolder="../places_reduced//test") 
+    data_test = Dataset(ImageFolder="../places_reduced/val") 
 
     bovw = BOVW()
     
