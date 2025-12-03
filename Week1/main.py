@@ -8,6 +8,8 @@ import glob
 import tqdm
 import os
 import optuna
+import pandas as pd
+
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -91,8 +93,15 @@ def evaluate_multiple_classifiers(X, y, cv=5):
     print(f"Best classifier: {best_name} with {best_mean:.4f} ± {best_std:.4f}")
     print("-"*30)
 
-    return best_name, results
+    df = pd.DataFrame([
+        {"classifier": name, "mean_acc": acc[0], "std_acc": acc[1]}
+        for name, acc in results.items()
+    ])
 
+    df.to_csv("classifier_experiments_log.csv", index=False)
+    print("Saved classifier results to classifier_experiments_log.csv")
+
+    return best_name, results
 
 def test(dataset: List[Tuple[Type[Image.Image], int]]
          , bovw: Type[BOVW], 
@@ -156,7 +165,7 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
     bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw)
     
     best_clf_name, clf_results = evaluate_multiple_classifiers(bovw_histograms, all_labels, cv=5) #!added
-    print(f"\nTraining final classifier: {best_clf_name}") #!added
+    print(f"Training final classifier: {best_clf_name}") #!added
 
     """    
     base_classifier = LogisticRegression(class_weight="balanced", solver="lbfgs")
