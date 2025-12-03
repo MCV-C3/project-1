@@ -1,6 +1,7 @@
 # README for Baseline Implementation
 
 ## Project Overview
+
 This project implements a baseline model for Bag of Visual Words (BoVW) with various local descriptors. The model is used to extract visual features from images and classify them using a logistic regression model. It supports descriptors such as **SIFT**, **ORB**, and **AKAZE**.
 
 ## Requirements
