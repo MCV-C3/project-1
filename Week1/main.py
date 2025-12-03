@@ -7,10 +7,12 @@ import numpy as np
 import glob
 import tqdm
 import os
+import optuna
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, cross_val_score
+from sklearn.cluster import MiniBatchKMeans
 
 
 
@@ -18,6 +20,45 @@ from sklearn.model_selection import GridSearchCV
 def extract_bovw_histograms(bovw: Type[BOVW], descriptors: Literal["N", "T", "d"]):
     return np.array([bovw._compute_codebook_descriptor(descriptors=descriptor, kmeans=bovw.codebook_algo) for descriptor in descriptors])
 
+
+def optimize_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", n_trials=10):
+    # Run optuna to find best k using cross-validation
+    
+    def objective(trial):
+        
+        #select the k value
+        k = trial.suggest_int("k", 20, 200, step=20)
+        
+        #perform kmeans and fit the codebook
+        trial_bovw = BOVW(detector_type=detector_type, codebook_size=k)
+        trial_bovw._update_fit_codebook(descriptors=all_descriptors)
+        
+        # create the histograms
+        x_histograms = extract_bovw_histograms(trial_bovw, all_descriptors)
+        
+        #cross-validate classifier
+        clf = LogisticRegression(class_weight="balanced", solver="lbfgs")
+        scores = cross_val_score(clf, x_histograms, all_labels, cv=5, scoring='accuracy')
+        return scores.mean()
+    
+    #surpress optuna big logs
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+        
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=n_trials)
+    
+    #log everything to keep the results
+    results_df = study.trials_dataframe()
+    
+    # Save to CSV (e.g., "tuning_k_AKAZE.csv")
+    csv_filename = f"experiment_log_k_{detector_type}.csv"
+    results_df.to_csv(csv_filename, index=False)
+    print(f"Logged all {n_trials} trials to {csv_filename}")
+    
+    print(f"Best K found: {study.best_params['k']} with accuracy: {study.best_value:.4f}")
+    print("-------------------------------------------------------")
+    
+    return study.best_params['k']
 
 def test(dataset: List[Tuple[Type[Image.Image], int]]
          , bovw: Type[BOVW], 
@@ -45,7 +86,7 @@ def test(dataset: List[Tuple[Type[Image.Image], int]]
     
 
 def train(dataset: List[Tuple[Type[Image.Image], int]],
-           bovw:Type[BOVW]):
+           bovw:Type[BOVW], use_optimize=True):
     all_descriptors = []
     all_labels = []
     
@@ -58,13 +99,28 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
             all_descriptors.append(descriptors)
             all_labels.append(label)
             
-    print("Fitting the codebook")
-    kmeans, cluster_centers = bovw._update_fit_codebook(descriptors=all_descriptors)
+    #OPTIONAL PART: OPTIMIZE CODEBOOK SIZE(K)
+    if use_optimize:
+        det_type = "SIFT" if "SIFT" in str(bovw.detector) else "AKAZE"
+        if hasattr(bovw.detector, "getDefaultName"): # Better check for OpenCV objects
+             name = bovw.detector.getDefaultName()
+             if "SIFT" in name: det_type = "SIFT"
+             elif "ORB" in name: det_type = "ORB"
+             else: det_type = "AKAZE"
 
-    print("Computing the bovw histograms")
-    bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw) 
-    X_train = bovw_histograms
-    y_train = all_labels
+        best_k = optimize_codebook_size(all_descriptors, all_labels, detector_type=det_type, n_trials=10)
+        
+        #Update the main bovw object with the best k
+        bovw.codebook_size = best_k
+        bovw.codebook_algo = MiniBatchKMeans(n_clusters=best_k, batch_size=2048, random_state=42)
+        
+    # 3. FINAL TRAINING (with best K)
+    print(f"Fitting the final codebook (k={bovw.codebook_size})...")
+    bovw._update_fit_codebook(descriptors=all_descriptors)
+
+    print("Computing final histograms...")
+    bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw)
+    
     
     base_classifier = LogisticRegression(class_weight="balanced", solver="lbfgs")
     param_grid = {
@@ -72,8 +128,8 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
         'max_iter': [100, 200, 500],
     }
     
-    grid_search = GridSearchCV(estimator=base_classifier, param_grid=param_grid, cv=5, scoring='accuracy')
-    grid_search.fit(X_train, y_train)
+    grid_search = GridSearchCV(base_classifier, param_grid, cv=5, scoring='accuracy')
+    grid_search.fit(bovw_histograms, all_labels)
     
     classifier = grid_search.best_estimator_
     
@@ -130,6 +186,6 @@ if __name__ == "__main__":
 
     bovw = BOVW()
     
-    bovw, classifier = train(dataset=data_train, bovw=bovw)
+    bovw, classifier = train(dataset=data_train, bovw=bovw, use_optimize=True)
     
     test(dataset=data_test, bovw=bovw, classifier=classifier)
