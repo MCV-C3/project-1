@@ -1,34 +1,48 @@
+import optuna
 from bovw import BOVW
 from main import Dataset, train, test
 
-def run_codebook_experiment(
-        train_path="../places_reduced/train",
-        test_path="../places_reduced/val",
-        codebook_sizes=[20, 50, 100, 200, 400]):
 
-    data_train = Dataset(ImageFolder=train_path)
-    data_test = Dataset(ImageFolder=test_path)
+# Updated main.py test() function to return accuracy.
+#   acc = accuracy_score(y_true=descriptors_labels, y_pred=y_pred)
+#   return acc
 
-    results = []
 
-    for k in codebook_sizes:
-        print(f" Running experiment with codebook size k = {k}")
+# Loading dataset once to avoid redundancy
+data_train = Dataset(ImageFolder="../places_reduced/train")
+data_test = Dataset(ImageFolder="../places_reduced/val")
 
-        bovw = BOVW(detector_type="AKAZE", codebook_size=k)
+def objective(trial):
+    """
+    Objective function for Optuna.
+    Choosing a codebook size k and evaluating its accuracy
+    """
+    # Search space for k
+    k = trial.suggest_int("k", 20, 800, step=20)
 
-        bovw, classifier = train(dataset=data_train, bovw=bovw)
+    print(f"\nTrial with k = {k} :")
 
-        print("\nEvaluating on test set...")
-        test_acc = test(dataset=data_test, bovw=bovw, classifier=classifier)
+    # Create BoVW model
+    bovw = BOVW(detector_type="AKAZE", codebook_size=k)
 
-        results.append((k, test_acc))
+    # Train on training data
+    bovw, clf = train(dataset=data_train, bovw=bovw)
 
-    print("\n FINAL RESULTS ")
-    for k, acc in results:
-        print(f"k = {k}: Test accuracy = {acc:.4f}")
+    # Validate using the test set
+    acc = test(dataset=data_test, bovw=bovw, classifier=clf)
+    print(f"k = {k}, accuracy = {acc:.4f}")
 
-    return results
-
+    return acc
 
 if __name__ == "__main__":
-    run_codebook_experiment()
+    print("Starting Optuna hyperparameter search for codebook size (k)...")
+
+    # Creating the study
+    study = optuna.create_study(direction="maximize")
+
+    # Runing optimization
+    study.optimize(objective, n_trials=10)
+
+    print("OPTUNA RESULTS:")
+    print("Best hyperparameters:", study.best_params)
+    print("Best validation accuracy:", study.best_value)
