@@ -181,12 +181,11 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
 def run_dense_experiments(dataset_train, dataset_test):
     results_log = []
 
-    print("=== EXPERIMENT 1: Standard vs Dense SIFT ===")
+    print("EXPERIMENT 1: Standard vs Dense SIFT")
     
     # 1. Standard SIFT (Baseline)
-    print("\nRunning Standard SIFT...")
+    print("\nStandard SIFT")
     bovw_std = BOVW(detector_type='SIFT', codebook_size=128)
-    # We rely on the CV score returned by train()
     _, _, cv_score_std = train(dataset_train, bovw_std, use_optimize=False)
     
     results_log.append({
@@ -199,13 +198,13 @@ def run_dense_experiments(dataset_train, dataset_test):
 
     # 2. Dense SIFT - Step Size Analysis
     print("\nRunning Dense SIFT Step Sizes...")
-    steps = [30, 20, 10] # Smaller step = more dense = usually better but slower
+    steps = [30, 20, 10] # smaller steps = more dense
     
     for step in steps:
         print(f"Testing Step Size: {step}")
         bovw_dense = BOVW(
             detector_type='DENSE_SIFT', 
-            codebook_size=128, # Keep k fixed for fair comparison
+            codebook_size=128, # Keep k fixed 
             detector_kwargs={'step_size': step, 'scales': [8]}
         )
         _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)
