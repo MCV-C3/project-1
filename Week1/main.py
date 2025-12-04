@@ -8,6 +8,7 @@ import glob
 import tqdm
 import os
 import optuna
+import pandas as pd
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -125,13 +126,14 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
     base_classifier = LogisticRegression(class_weight="balanced", solver="lbfgs")
     param_grid = {
         'C': [0.01, 0.1, 1, 10, 100],
-        'max_iter': [100, 200, 500],
+        'max_iter': [300, 500, 1000],
     }
     
     grid_search = GridSearchCV(base_classifier, param_grid, cv=5, scoring='accuracy')
     grid_search.fit(bovw_histograms, all_labels)
     
     classifier = grid_search.best_estimator_
+    best_cv_score = grid_search.best_score_
     
     print("Best Hyperparameters:", grid_search.best_params_)
     print(f"Best Cross-Validation Accuracy on training: {grid_search.best_score_}")
@@ -139,7 +141,7 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
     # classifier = LogisticRegression(class_weight="balanced").fit(bovw_histograms, all_labels)
     #print("Accuracy on Phase[Train]:", accuracy_score(y_true=all_labels, y_pred=classifier.predict(bovw_histograms)))
     
-    return bovw, classifier
+    return bovw, classifier, best_cv_score
 
 
 def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.Image], int]]:
@@ -176,16 +178,91 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
     return dataset
 
 
+def run_dense_experiments(dataset_train, dataset_test):
+    results_log = []
+
+    print("=== EXPERIMENT 1: Standard vs Dense SIFT ===")
+    
+    # 1. Standard SIFT (Baseline)
+    print("\nRunning Standard SIFT...")
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128)
+    # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(dataset_train, bovw_std, use_optimize=False)
+    
+    results_log.append({
+        "Experiment": "Type Comparison",
+        "Detector": "Standard SIFT", 
+        "Step Size": "N/A", 
+        "Scales": "Default", 
+        "CV Accuracy": cv_score_std
+    })
+
+    # 2. Dense SIFT - Step Size Analysis
+    print("\nRunning Dense SIFT Step Sizes...")
+    steps = [30, 20, 10] # Smaller step = more dense = usually better but slower
+    
+    for step in steps:
+        print(f"Testing Step Size: {step}")
+        bovw_dense = BOVW(
+            detector_type='DENSE_SIFT', 
+            codebook_size=128, # Keep k fixed for fair comparison
+            detector_kwargs={'step_size': step, 'scales': [8]}
+        )
+        _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)
+        
+        results_log.append({
+            "Experiment": "Step Size",
+            "Detector": "Dense SIFT", 
+            "Step Size": step, 
+            "Scales": "[8]", 
+            "CV Accuracy": cv_score
+        })
+
+    # 3. Dense SIFT - Scale Analysis
+    print("\nRunning Dense SIFT Scale Analysis...")
+    # Does scale play a role? We test small, large, and multi-scale.
+    scale_configs = [ 
+        ([4], "Small"), 
+        ([16], "Large"), 
+        ([4, 8, 12, 16], "Multi-Scale") 
+    ]
+    
+    for scales, name in scale_configs:
+        print(f"Testing Scales: {name} {scales}")
+        bovw_dense = BOVW(
+            detector_type='DENSE_SIFT', 
+            codebook_size=128,
+            detector_kwargs={'step_size': 15, 'scales': scales} # Fix step to 15
+        )
+        _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)
+        
+        results_log.append({
+            "Experiment": "Scale Analysis",
+            "Detector": "Dense SIFT", 
+            "Step Size": 15, 
+            "Scales": str(scales), 
+            "CV Accuracy": cv_score
+        })
+
+    # Save Results
+    df = pd.DataFrame(results_log)
+    df.to_csv("results_dense_sift.csv", index=False)
+    print("\nExperiments Complete! Results saved to results_dense_sift.csv")
+    print(df)
     
 
 
 if __name__ == "__main__":
      #/home/cboned/data/Master/MIT_split
     data_train = Dataset(ImageFolder="../places_reduced/train")
-    data_test = Dataset(ImageFolder="../places_reduced/val") 
+    data_test = Dataset(ImageFolder="../places_reduced/val")
 
-    bovw = BOVW()
+    # print("Results for SIFT detector:")
+    # bovw = BOVW(detector_type='SIFT')
+    # bovw, classifier = train(dataset=data_train, bovw=bovw, use_optimize=True)
+    # test(dataset=data_test, bovw=bovw, classifier=classifier)
     
-    bovw, classifier = train(dataset=data_train, bovw=bovw, use_optimize=True)
+    run_dense_experiments(dataset_train=data_train, dataset_test=data_test)
     
-    test(dataset=data_test, bovw=bovw, classifier=classifier)
+    
+    

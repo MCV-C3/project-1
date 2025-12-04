@@ -1,0 +1,8 @@
+Experiment,Detector,Step Size,Scales,CV Accuracy
+Type Comparison,Standard SIFT,N/A,Default,0.27960156781873585
+Step Size,Dense SIFT,30,[8],0.26080459770114944
+Step Size,Dense SIFT,20,[8],0.2833333333333334
+Step Size,Dense SIFT,10,[8],0.30241379310344824
+Scale Analysis,Dense SIFT,15,[4],0.28689655172413797
+Scale Analysis,Dense SIFT,15,[16],0.28356321839080456
+Scale Analysis,Dense SIFT,15,"[4, 8, 12, 16]",0.30724137931034484
