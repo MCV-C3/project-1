@@ -10,8 +10,6 @@ import os
 import optuna
 import pandas as pd
 
-from datetime import datetime
-
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV, cross_val_score
@@ -20,7 +18,7 @@ from sklearn.cluster import MiniBatchKMeans
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
-
+from datetime import datetime
 
 def extract_bovw_histograms(bovw: Type[BOVW], descriptors: Literal["N", "T", "d"]):
     return np.array([bovw._compute_codebook_descriptor(descriptors=descriptor, kmeans=bovw.codebook_algo) for descriptor in descriptors])
@@ -65,7 +63,6 @@ def optimize_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", n
     
     return study.best_params['k']
 
-
 def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=None):
 
     classifiers = {
@@ -87,12 +84,12 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
         print(f"  CV accuracy: {mean_acc:.4f} ± {std_acc:.4f}")
         results[name] = (mean_acc, std_acc)
 
-    best_name = max(results, key=lambda k: results[k][0]) # highest mean acc :)
+    best_name = max(results, key=lambda k: results[k][0])  # highest mean acc
     best_mean, best_std = results[best_name]
 
-    print("-"*30)
+    print("-" * 30)
     print(f"Best classifier: {best_name} with {best_mean:.4f} ± {best_std:.4f}")
-    print("-"*30)
+    print("-" * 30)
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -112,6 +109,7 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
     print("Saved classifier results to classifier_experiments_log.csv")
 
     return best_name, results
+
 
 def test(dataset: List[Tuple[Type[Image.Image], int]]
          , bovw: Type[BOVW], 
@@ -139,73 +137,90 @@ def test(dataset: List[Tuple[Type[Image.Image], int]]
     
 
 def train(dataset: List[Tuple[Type[Image.Image], int]],
-           bovw:Type[BOVW], use_optimize=True):
+          bovw: Type[BOVW],
+          use_optimize: bool = True):
+
     all_descriptors = []
     all_labels = []
-    
+
     for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Training]: Extracting the descriptors"):
-        
+
         image, label = dataset[idx]
         _, descriptors = bovw._extract_features(image=np.array(image))
-        
-        if descriptors  is not None:
+
+        if descriptors is not None:
             all_descriptors.append(descriptors)
             all_labels.append(label)
-            
-    #OPTIONAL PART: OPTIMIZE CODEBOOK SIZE(K)
-    if use_optimize:
-        det_type = "SIFT" if "SIFT" in str(bovw.detector) else "AKAZE"
-        if hasattr(bovw.detector, "getDefaultName"): # Better check for OpenCV objects
-             name = bovw.detector.getDefaultName()
-             if "SIFT" in name: det_type = "SIFT"
-             elif "ORB" in name: det_type = "ORB"
-             else: det_type = "AKAZE"
 
-        best_k = optimize_codebook_size(all_descriptors, all_labels, detector_type=det_type, n_trials=10)
-        
-        #Update the main bovw object with the best k
+    # --- Determine detector type string for logging/Optuna ---
+    det_type = "AKAZE"  # default
+    if hasattr(bovw.detector, "getDefaultName"):
+        name = bovw.detector.getDefaultName()
+        if "SIFT" in name:
+            det_type = "SIFT"
+        elif "ORB" in name:
+            det_type = "ORB"
+        else:
+            det_type = "AKAZE"
+    else:
+        # fallback to checking string repr
+        if "SIFT" in str(bovw.detector):
+            det_type = "SIFT"
+        elif "ORB" in str(bovw.detector):
+            det_type = "ORB"
+        else:
+            det_type = "AKAZE"
+
+    # --- OPTIONAL: OPTIMIZE CODEBOOK SIZE (k) WITH OPTUNA ---
+    if use_optimize:
+        best_k = optimize_codebook_size(
+            all_descriptors,
+            all_labels,
+            detector_type=det_type,
+            n_trials=10
+        )
+
+        # Update the main BOVW object with best k
         bovw.codebook_size = best_k
-        bovw.codebook_algo = MiniBatchKMeans(n_clusters=best_k, batch_size=2048, random_state=42)
-        
-    # 3. FINAL TRAINING (with best K)
+        bovw.codebook_algo = MiniBatchKMeans(
+            n_clusters=best_k, batch_size=2048, random_state=42
+        )
+
+    # --- FINAL TRAINING (with current k, optimized or not) ---
     print(f"Fitting the final codebook (k={bovw.codebook_size})...")
     bovw._update_fit_codebook(descriptors=all_descriptors)
 
     print("Computing final histograms...")
     bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw)
-    
-    best_clf_name, clf_results = evaluate_multiple_classifiers(bovw_histograms, all_labels, cv=5,  detector_type=det_type, codebook_size=bovw.codebook_size) #!added
-    print(f"Training final classifier: {best_clf_name}") #!added
 
-    """    
-    base_classifier = LogisticRegression(class_weight="balanced", solver="lbfgs")
-    param_grid = {
-        'C': [0.01, 0.1, 1, 10, 100],
-        'max_iter': [100, 200, 500],
-    }
-    
-    grid_search = GridSearchCV(base_classifier, param_grid, cv=5, scoring='accuracy')
-    grid_search.fit(bovw_histograms, all_labels)
-    
-    classifier = grid_search.best_estimator_
-    
-    print("Best Hyperparameters:", grid_search.best_params_)
-    print(f"Best Cross-Validation Accuracy on training: {grid_search.best_score_}")
-    # print("Fitting the classifier")
-    # classifier = LogisticRegression(class_weight="balanced").fit(bovw_histograms, all_labels)
-    #print("Accuracy on Phase[Train]:", accuracy_score(y_true=all_labels, y_pred=classifier.predict(bovw_histograms)))
-    
-    return bovw, classifier
-    """
+    # --- Evaluate multiple classifiers ---
+    best_clf_name, clf_results = evaluate_multiple_classifiers(
+        bovw_histograms,
+        all_labels,
+        cv=5,
+        detector_type=det_type,
+        codebook_size=bovw.codebook_size
+    )
+    print(f"Training final classifier: {best_clf_name}")
 
+    # Get best CV score for logging / dense experiments
+    best_cv_score = clf_results[best_clf_name][0]
+
+    # --- Instantiate and train the final classifier according to best_clf_name ---
     if best_clf_name == "log_reg":
-        final_clf = LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000)
+        final_clf = LogisticRegression(class_weight="balanced",
+                                       solver="lbfgs",
+                                       max_iter=2000)
 
     elif best_clf_name == "svm_linear":
-        final_clf = SVC(kernel="linear", class_weight="balanced", probability=True)
+        final_clf = SVC(kernel="linear",
+                        class_weight="balanced",
+                        probability=True)
 
     elif best_clf_name == "svm_rbf":
-        final_clf = SVC(kernel="rbf", class_weight="balanced", probability=True)
+        final_clf = SVC(kernel="rbf",
+                        class_weight="balanced",
+                        probability=True)
 
     elif best_clf_name == "knn":
         final_clf = KNeighborsClassifier(n_neighbors=5)
@@ -218,7 +233,10 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
 
     final_clf.fit(bovw_histograms, all_labels)
 
-    return bovw, final_clf
+    # IMPORTANT: keep the same return signature so run_dense_experiments still works
+    return bovw, final_clf, best_cv_score
+
+
 
 def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.Image], int]]:
 
@@ -253,16 +271,95 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
 
     return dataset
 
+
+def run_dense_experiments(dataset_train, dataset_test):
+    results_log = []
+
+    print("=== EXPERIMENT 1: Standard vs Dense SIFT ===")
+    
+    # 1. Standard SIFT (Baseline)
+    print("\nRunning Standard SIFT...")
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128)
+    # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(dataset_train, bovw_std, use_optimize=False)
+    
+    results_log.append({
+        "Experiment": "Type Comparison",
+        "Detector": "Standard SIFT", 
+        "Step Size": "N/A", 
+        "Scales": "Default", 
+        "CV Accuracy": cv_score_std
+    })
+
+    # 2. Dense SIFT - Step Size Analysis
+    print("\nRunning Dense SIFT Step Sizes...")
+    steps = [30, 20, 10] # Smaller step = more dense = usually better but slower
+    
+    for step in steps:
+        print(f"Testing Step Size: {step}")
+        bovw_dense = BOVW(
+            detector_type='DENSE_SIFT', 
+            codebook_size=128, # Keep k fixed for fair comparison
+            detector_kwargs={'step_size': step, 'scales': [8]}
+        )
+        _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)
+        
+        results_log.append({
+            "Experiment": "Step Size",
+            "Detector": "Dense SIFT", 
+            "Step Size": step, 
+            "Scales": "[8]", 
+            "CV Accuracy": cv_score
+        })
+
+    # 3. Dense SIFT - Scale Analysis
+    print("\nRunning Dense SIFT Scale Analysis...")
+    # Does scale play a role? We test small, large, and multi-scale.
+    scale_configs = [ 
+        ([4], "Small"), 
+        ([16], "Large"), 
+        ([4, 8, 12, 16], "Multi-Scale") 
+    ]
+    
+    for scales, name in scale_configs:
+        print(f"Testing Scales: {name} {scales}")
+        bovw_dense = BOVW(
+            detector_type='DENSE_SIFT', 
+            codebook_size=128,
+            detector_kwargs={'step_size': 15, 'scales': scales} # Fix step to 15
+        )
+        _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)
+        
+        results_log.append({
+            "Experiment": "Scale Analysis",
+            "Detector": "Dense SIFT", 
+            "Step Size": 15, 
+            "Scales": str(scales), 
+            "CV Accuracy": cv_score
+        })
+
+    # Save Results
+    df = pd.DataFrame(results_log)
+    df.to_csv("results_dense_sift.csv", index=False)
+    print("\nExperiments Complete! Results saved to results_dense_sift.csv")
+    print(df)
+    
+
+
 if __name__ == "__main__":
      #/home/cboned/data/Master/MIT_split
-    print("Loading Datasets...")
+    print("Loading datasets...")
     data_train = Dataset(ImageFolder="../places_reduced/train")
-    print(f"Training samples: {len(data_train)}")
-    data_test = Dataset(ImageFolder="../places_reduced/val") 
-    print(f"Testing samples: {len(data_test)}")
+    print("Train dataset loaded with", len(data_train), "images.")
+    data_test = Dataset(ImageFolder="../places_reduced/val")
+    print("Test dataset loaded with", len(data_test), "images.")
 
-    bovw = BOVW()
+    # print("Results for SIFT detector:")
+    # bovw = BOVW(detector_type='SIFT')
+    # bovw, classifier = train(dataset=data_train, bovw=bovw, use_optimize=True)
+    # test(dataset=data_test, bovw=bovw, classifier=classifier)
     
-    bovw, classifier = train(dataset=data_train, bovw=bovw, use_optimize=True)
+    run_dense_experiments(dataset_train=data_train, dataset_test=data_test)
     
-    test(dataset=data_test, bovw=bovw, classifier=classifier)
+    
+    
