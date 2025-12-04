@@ -10,6 +10,7 @@ import os
 import optuna
 import pandas as pd
 
+from datetime import datetime
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -65,7 +66,7 @@ def optimize_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", n
     return study.best_params['k']
 
 
-def evaluate_multiple_classifiers(X, y, cv=5):
+def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=None):
 
     classifiers = {
         "log_reg": LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=1000),
@@ -93,8 +94,17 @@ def evaluate_multiple_classifiers(X, y, cv=5):
     print(f"Best classifier: {best_name} with {best_mean:.4f} ± {best_std:.4f}")
     print("-"*30)
 
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
     df = pd.DataFrame([
-        {"classifier": name, "mean_acc": acc[0], "std_acc": acc[1]}
+        {
+            "timestamp": timestamp,
+            "detector_type": detector_type,
+            "codebook_size": codebook_size,
+            "classifier": name,
+            "mean_acc": acc[0],
+            "std_acc": acc[1]
+        }
         for name, acc in results.items()
     ])
 
@@ -164,7 +174,7 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
     print("Computing final histograms...")
     bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw)
     
-    best_clf_name, clf_results = evaluate_multiple_classifiers(bovw_histograms, all_labels, cv=5) #!added
+    best_clf_name, clf_results = evaluate_multiple_classifiers(bovw_histograms, all_labels, cv=5,  detector_type=det_type, codebook_size=bovw.codebook_size) #!added
     print(f"Training final classifier: {best_clf_name}") #!added
 
     """    
@@ -245,8 +255,11 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
 
 if __name__ == "__main__":
      #/home/cboned/data/Master/MIT_split
+    print("Loading Datasets...")
     data_train = Dataset(ImageFolder="../places_reduced/train")
+    print(f"Training samples: {len(data_train)}")
     data_test = Dataset(ImageFolder="../places_reduced/val") 
+    print(f"Testing samples: {len(data_test)}")
 
     bovw = BOVW()
     

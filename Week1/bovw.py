@@ -41,23 +41,17 @@ class BOVW():
         return self.codebook_algo, self.codebook_algo.cluster_centers_
     
     def _compute_codebook_descriptor(self, descriptors: Literal["1 T d"], kmeans: Type[KMeans]) -> np.ndarray:
-        
-        if descriptors.shape[0] != 0:
 
-            visual_words = kmeans.predict(descriptors)
+        visual_words = kmeans.predict(descriptors)
         
-            
-            # Create a histogram of visual words
-            codebook_descriptor = np.zeros(kmeans.n_clusters)
-            for label in visual_words:
-                codebook_descriptor[label] += 1
-            
-            # Normalize the histogram (optional)
-            codebook_descriptor = codebook_descriptor / np.linalg.norm(codebook_descriptor)
         
-        else:
-            codebook_descriptor = np.zeros(kmeans.n_clusters)
-            
+        # Create a histogram of visual words
+        codebook_descriptor = np.zeros(kmeans.n_clusters)
+        for label in visual_words:
+            codebook_descriptor[label] += 1
+        
+        # Normalize the histogram (optional)
+        codebook_descriptor = codebook_descriptor / np.linalg.norm(codebook_descriptor)
         
         return codebook_descriptor       
     
