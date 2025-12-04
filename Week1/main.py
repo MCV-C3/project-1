@@ -105,7 +105,13 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
         for name, acc in results.items()
     ])
 
-    df.to_csv("classifier_experiments_log.csv", index=False)
+    df.to_csv(
+        "classifier_experiments_log.csv",
+        mode="a",                                
+        index=False,
+        header=not os.path.exists("classifier_experiments_log.csv")  
+    )
+
     print("Saved classifier results to classifier_experiments_log.csv")
 
     return best_name, results
@@ -299,7 +305,7 @@ def run_dense_experiments(dataset_train, dataset_test):
         print(f"Testing Step Size: {step}")
         bovw_dense = BOVW(
             detector_type='DENSE_SIFT', 
-            codebook_size=128, # Keep k fixed for fair comparison
+            codebook_size= 128, # Keep k fixed for fair comparison
             detector_kwargs={'step_size': step, 'scales': [8]}
         )
         _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)

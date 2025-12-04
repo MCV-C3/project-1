@@ -12,14 +12,19 @@ class BOVW():
     
     def __init__(self, detector_type="AKAZE", codebook_size:int=50, detector_kwargs:dict={}, codebook_kwargs:dict={}):
 
+        self.detector_type = detector_type
+        self.detector_kwargs = detector_kwargs
+        
         if detector_type == 'SIFT':
             self.detector = cv2.SIFT_create(**detector_kwargs)
         elif detector_type == 'AKAZE':
             self.detector = cv2.AKAZE_create(**detector_kwargs)
         elif detector_type == 'ORB':
             self.detector = cv2.ORB_create(**detector_kwargs)
+        elif detector_type == 'DENSE_SIFT':
+            self.detector = cv2.SIFT_create()
         else:
-            raise ValueError("Detector type must be 'SIFT', 'SURF', or 'ORB'")
+            raise ValueError("Detector type must be 'SIFT', 'SURF', 'ORB', or 'DENSE_SIFT'")
         
         self.codebook_size = codebook_size
         self.codebook_algo = MiniBatchKMeans(n_clusters=self.codebook_size, **codebook_kwargs)
@@ -28,7 +33,26 @@ class BOVW():
     ## Modify this function in order to be able to create a dense sift
     def _extract_features(self, image: Literal["H", "W", "C"]) -> Tuple:
 
-        return self.detector.detectAndCompute(image, None)
+        if self.detector_type == 'DENSE_SIFT':
+            step_size = self.detector_kwargs.get('step_size', 15)
+            scales = self.detector_kwargs.get('scales', [4, 8, 12, 16])
+            
+            keypoints = []
+            h, w = image.shape[:2]
+            
+            #generate the grid
+            for scale in scales:
+                #loop over the image
+                for y in range(step_size, h - step_size, step_size):
+                    for x in range(step_size, w - step_size, step_size):
+                        #create a manual keypoint
+                        kp = cv2.KeyPoint(float(x), float(y), float(scale))
+                        keypoints.append(kp)
+                        
+            #compute the descriptors
+            return self.detector.compute(image, keypoints)
+        else:
+            return self.detector.detectAndCompute(image, None)
     
     
     def _update_fit_codebook(self, descriptors: Literal["N", "T", "d"])-> Tuple[Type[MiniBatchKMeans],
