@@ -7,6 +7,7 @@ import numpy as np
 import glob
 import tqdm
 import os
+import pickle
 import optuna
 import pandas as pd
 
@@ -149,14 +150,17 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
     all_descriptors = []
     all_labels = []
 
-    for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Training]: Extracting the descriptors"):
+    # for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Training]: Extracting the descriptors"):
 
-        image, label = dataset[idx]
-        _, descriptors = bovw._extract_features(image=np.array(image))
+    #     image, label = dataset[idx]
+    #     _, descriptors = bovw._extract_features(image=np.array(image))
 
-        if descriptors is not None:
-            all_descriptors.append(descriptors)
-            all_labels.append(label)
+    #     if descriptors is not None:
+    #         all_descriptors.append(descriptors)
+    #         all_labels.append(label)
+
+    all_descriptors, all_labels = get_descriptors(dataset, bovw)
+    print(f"Extracted descriptors from {len(all_descriptors)} images.")
 
     # --- Determine detector type string for logging/Optuna ---
     det_type = "AKAZE"  # default
@@ -277,6 +281,55 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
 
     return dataset
 
+def get_descriptors(dataset, bovw, cache_dir="cache"):
+    """
+    Smart feature extraction:
+    - If Standard SIFT/ORB/AKAZE: Tries to load from disk cache.
+    - If DENSE_SIFT: Always re-calculates (because parameters change).
+    """
+    # 1. Handling Dense SIFT (Always Recalculate)
+    if bovw.detector_type == 'DENSE_SIFT':
+        print(f"Detector is DENSE_SIFT. Skipping cache to ensure correct parameters...")
+        all_descriptors = []
+        all_labels = []
+        for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Extracting Dense Features]"):
+            image, label = dataset[idx]
+            _, descriptors = bovw._extract_features(image=np.array(image))
+            if descriptors is not None:
+                all_descriptors.append(descriptors)
+                all_labels.append(label)
+        return all_descriptors, all_labels
+
+    # 2. Handling Standard Detectors (Use Cache)
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f"train_descriptors_{bovw.detector_type}.pkl")
+    
+    if os.path.exists(cache_file):
+        print(f"Loading cached descriptors from {cache_file}...")
+        with open(cache_file, "rb") as f:
+            all_descriptors, all_labels = pickle.load(f)
+        print(f"Loaded {len(all_descriptors)} images from cache.")
+        return all_descriptors, all_labels
+    
+    else:
+        print(f"No cache found for {bovw.detector_type}. Extracting features...")
+        all_descriptors = []
+        all_labels = []
+        
+        for idx in tqdm.tqdm(range(len(dataset)), desc=f"Phase [Extracting {bovw.detector_type}]"):
+            image, label = dataset[idx]
+            _, descriptors = bovw._extract_features(image=np.array(image))
+            
+            if descriptors is not None:
+                all_descriptors.append(descriptors)
+                all_labels.append(label)
+        
+        print(f"Saving descriptors to {cache_file}...")
+        with open(cache_file, "wb") as f:
+            pickle.dump((all_descriptors, all_labels), f)
+            
+        return all_descriptors, all_labels
+
 
 def run_dense_experiments(dataset_train, dataset_test):
     results_log = []
@@ -350,6 +403,39 @@ def run_dense_experiments(dataset_train, dataset_test):
     print("\nExperiments Complete! Results saved to results_dense_sift.csv")
     print(df)
     
+    
+    
+    
+def run_pca_experiments(dataset_train, dataset_test):
+    results_log = []
+    print("\nEXPERIMENT: Dimensionality Reduction (PCA)")
+    
+    # We test SIFT because it has 128 dims, ORB/AKAZE binary/smaller. 
+
+    # Dimensions to test: None , 80, 64, 32, 16
+    pca_configs = [None, 80, 64, 32, 16] 
+    
+    for pca_dim in pca_configs:
+        
+        print(f"\nTesting PCA Dimension: {pca_dim if pca_dim else 'Original (128)'}")
+        bovw = BOVW(detector_type='SIFT', codebook_size=128, pca_dim=pca_dim)
+        
+        _, _, cv_score = train(dataset_train, bovw, use_optimize=False)
+        
+        results_log.append({
+            "Experiment": "PCA Analysis",
+            "Detector": "SIFT",
+            "PCA Dimensions": pca_dim if pca_dim else 128,
+            "CV Accuracy": cv_score
+        })
+
+    # Save results
+    df = pd.DataFrame(results_log)
+    df.to_csv("results_pca_experiment.csv", index=False)
+    print("\nPCA Experiments Complete! Saved to results_pca_experiment.csv")
+    print(df)
+        
+    
 
 
 if __name__ == "__main__":
@@ -366,6 +452,6 @@ if __name__ == "__main__":
     # test(dataset=data_test, bovw=bovw, classifier=classifier)
     
     run_dense_experiments(dataset_train=data_train, dataset_test=data_test)
-    
+    # run_pca_experiments(data_train, data_test)
     
     

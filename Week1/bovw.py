@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from sklearn.cluster import KMeans, MiniBatchKMeans
+from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import os
 import glob
@@ -10,7 +11,7 @@ from typing import *
 
 class BOVW():
     
-    def __init__(self, detector_type="AKAZE", codebook_size:int=50, detector_kwargs:dict={}, codebook_kwargs:dict={}):
+    def __init__(self, detector_type="AKAZE", codebook_size:int=50, detector_kwargs:dict={}, codebook_kwargs:dict={}, pca_dim: int = None):
 
         self.detector_type = detector_type
         self.detector_kwargs = detector_kwargs
@@ -29,6 +30,8 @@ class BOVW():
         self.codebook_size = codebook_size
         self.codebook_algo = MiniBatchKMeans(n_clusters=self.codebook_size, **codebook_kwargs)
         
+        self.pca_dim = pca_dim
+        self.pca_model = None
                
     ## Modify this function in order to be able to create a dense sift
     def _extract_features(self, image: Literal["H", "W", "C"]) -> Tuple:
@@ -59,6 +62,13 @@ class BOVW():
                                                                                Literal["codebook_size", "d"]]:
         
         all_descriptors = np.vstack(descriptors)
+        
+        if self.pca_dim is not None:
+            if self.pca_model is None:
+                print(f"Training PCA to reduce dimensions to {self.pca_dim}...")
+                self.pca_model = PCA(n_components=self.pca_dim)
+                self.pca_model.fit(all_descriptors)
+            all_descriptors = self.pca_model.transform(all_descriptors)
 
         self.codebook_algo = self.codebook_algo.partial_fit(X=all_descriptors)
 
@@ -66,6 +76,8 @@ class BOVW():
     
     def _compute_codebook_descriptor(self, descriptors: Literal["1 T d"], kmeans: Type[KMeans]) -> np.ndarray:
 
+        if self.pca_dim is not None and self.pca_model is not None:
+            descriptors = self.pca_model.transform(descriptors)
         visual_words = kmeans.predict(descriptors)
         
         
