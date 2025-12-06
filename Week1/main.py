@@ -1,3 +1,4 @@
+import cv2
 from bovw import BOVW
 
 from typing import *
@@ -20,10 +21,90 @@ from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from datetime import datetime
+from sklearn.preprocessing import Normalizer, StandardScaler
+
+from sklearn.preprocessing import Normalizer, StandardScaler, MinMaxScaler
+
+def apply_scaling(bovw_histograms, method="l2"):
+    
+
+    if method == "standard":
+        scaler = StandardScaler()
+        return scaler.fit_transform(bovw_histograms)
+        
+    elif method == "minmax":
+        scaler = MinMaxScaler()
+        return scaler.fit_transform(bovw_histograms)
+        
+    elif method == "l1":
+        # Sum of vector = 1
+        scaler = Normalizer(norm='l1')
+        return scaler.transform(bovw_histograms)
+        
+    elif method == "l2":
+        # Magnitude of vector = 1 (Standard for Linear SVM)
+        scaler = Normalizer(norm='l2')
+        return scaler.transform(bovw_histograms)
+        
+    elif method == "hellinger":
+        # L1 norm followed by Square root
+        scaler = Normalizer(norm='l1')
+        normed = scaler.transform(bovw_histograms)
+        return np.sqrt(normed)
+
 
 def extract_bovw_histograms(bovw: Type[BOVW], descriptors: Literal["N", "T", "d"]):
     return np.array([bovw._compute_codebook_descriptor(descriptors=descriptor, kmeans=bovw.codebook_algo) for descriptor in descriptors])
 
+
+def pyramid_extract_bovw_histograms(bovw: Type[BOVW], 
+                                    all_descriptors: Literal["N", "T", "d"], 
+                                    all_keypoints, 
+                                    all_dimensions, 
+                                    levels: int = 2):
+   
+    pyramid_histograms = []
+
+    for level in range(1, levels + 1):
+        
+        
+        level_cells = [[[] for _ in range(len(all_descriptors))] for _ in range(level * level)]
+        
+        for img_idx, (descriptors, keypoints, dimensions) in enumerate(zip(all_descriptors, all_keypoints, all_dimensions)):
+
+            if descriptors is None or len(descriptors) == 0:
+                continue
+
+            h, w = dimensions
+
+            w_step = w / level
+            h_step = h / level
+            
+            for kp, desc in zip(keypoints, descriptors):
+                x, y = kp.pt
+           
+                col = int(min(x // w_step, level - 1))
+                row = int(min(y // h_step, level - 1))
+                
+                # Map 2D grid (row, col) to 1D list index
+                cell_index = row * level + col
+                
+                level_cells[cell_index][img_idx].append(desc)
+
+        # Process the histograms for this level
+        for cell_descriptors_per_image in level_cells:
+            # Convert lists to numpy arrays; handle cases where a cell might be empty in an image
+            formatted_descs = []
+            for d in cell_descriptors_per_image:    
+
+                formatted_descs.append(np.array(d))
+
+            # Compute histogram for this specific grid cell across all images
+            cell_hist = extract_bovw_histograms(descriptors=formatted_descs, bovw=bovw)
+            pyramid_histograms.append(cell_hist)
+
+    # Concatenate all histograms (Global + Level 2 cells + Level 3 cells...)
+    return np.concatenate(pyramid_histograms, axis=1)
 
 def optimize_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", n_trials=10):
     # Run optuna to find best k using cross-validation
@@ -120,23 +201,44 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
 
 def test(dataset: List[Tuple[Type[Image.Image], int]]
          , bovw: Type[BOVW], 
-         classifier:Type[object]):
+         classifier:Type[object],
+         ):
     
     test_descriptors = []
     descriptors_labels = []
     
+    test_keypoints = []
+    test_dimensions = []
+
+
     for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Eval]: Extracting the descriptors"):
         image, label = dataset[idx]
-        _, descriptors = bovw._extract_features(image=np.array(image))
+        keyponts, descriptors = bovw._extract_features(image=np.array(image))
         
         if descriptors is not None:
             test_descriptors.append(descriptors)
             descriptors_labels.append(label)
+
+            test_dimensions.append((image.height, image.width))
+            test_keypoints.append(keyponts)
             
+    if bovw.pyramid:
+        print("Computing the pyramid bovw histograms")
+        
+        bovw_histograms = pyramid_extract_bovw_histograms(all_descriptors=test_descriptors, bovw=bovw,all_keypoints=test_keypoints,all_dimensions=test_dimensions,levels=bovw.pyramid_levels)
+        
     
-    print("Computing the bovw histograms")
-    bovw_histograms = extract_bovw_histograms(descriptors=test_descriptors, bovw=bovw)
+    else:
+        print("Computing the bovw histograms")
+        bovw_histograms = extract_bovw_histograms(descriptors=test_descriptors, bovw=bovw)
+        
     
+    if bovw.scaling:
+        
+        bovw_histograms = apply_scaling(bovw_histograms,bovw.method)
+
+
+        
     print("predicting the values")
     y_pred = classifier.predict(bovw_histograms)
     
@@ -145,10 +247,9 @@ def test(dataset: List[Tuple[Type[Image.Image], int]]
 
 def train(dataset: List[Tuple[Type[Image.Image], int]],
           bovw: Type[BOVW],
-          use_optimize: bool = True):
+          use_optimize: bool = True,
+         ):
 
-    all_descriptors = []
-    all_labels = []
 
     # for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Training]: Extracting the descriptors"):
 
@@ -159,7 +260,7 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
     #         all_descriptors.append(descriptors)
     #         all_labels.append(label)
 
-    all_descriptors, all_labels = get_descriptors(dataset, bovw)
+    all_descriptors,all_keypoints,img_dimensions, all_labels = get_descriptors(dataset, bovw)
     print(f"Extracted descriptors from {len(all_descriptors)} images.")
 
     # --- Determine detector type string for logging/Optuna ---
@@ -200,8 +301,28 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
     print(f"Fitting the final codebook (k={bovw.codebook_size})...")
     bovw._update_fit_codebook(descriptors=all_descriptors)
 
-    print("Computing final histograms...")
-    bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw)
+  
+    if bovw.pyramid:
+        print("Computing the pyramid bovw histograms")
+        
+        bovw_histograms = pyramid_extract_bovw_histograms(all_descriptors=all_descriptors, bovw=bovw,all_keypoints=all_keypoints,all_dimensions=img_dimensions,levels=bovw.pyramid_levels)
+        
+    
+    else:
+        print("Computing the bovw histograms")
+        bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw)
+        
+    
+    if bovw.normalize:
+        
+        normalizer = Normalizer(norm='l2')
+        bovw_histograms = normalizer.fit_transform(bovw_histograms)
+
+
+    if bovw.scalar:
+
+        scaler = StandardScaler()
+        bovw_histograms = scaler.fit_transform(bovw_histograms)
 
     # --- Evaluate multiple classifiers ---
     best_clf_name, clf_results = evaluate_multiple_classifiers(
@@ -291,14 +412,20 @@ def get_descriptors(dataset, bovw, cache_dir="cache"):
     if bovw.detector_type == 'DENSE_SIFT':
         print(f"Detector is DENSE_SIFT. Skipping cache to ensure correct parameters...")
         all_descriptors = []
+        all_keypoints = []
         all_labels = []
+        img_dimensions = []
+
+
         for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Extracting Dense Features]"):
             image, label = dataset[idx]
-            _, descriptors = bovw._extract_features(image=np.array(image))
+            keyponts, descriptors = bovw._extract_features(image=np.array(image))
             if descriptors is not None:
                 all_descriptors.append(descriptors)
                 all_labels.append(label)
-        return all_descriptors, all_labels
+                img_dimensions.append((image.height, image.width))
+                all_keypoints.append(keyponts)
+        return all_descriptors,all_keypoints,img_dimensions, all_labels
 
     # 2. Handling Standard Detectors (Use Cache)
     os.makedirs(cache_dir, exist_ok=True)
@@ -307,28 +434,52 @@ def get_descriptors(dataset, bovw, cache_dir="cache"):
     if os.path.exists(cache_file):
         print(f"Loading cached descriptors from {cache_file}...")
         with open(cache_file, "rb") as f:
-            all_descriptors, all_labels = pickle.load(f)
+            all_descriptors,keypoints_from_pickle,img_dimensions, all_labels = pickle.load(f)
         print(f"Loaded {len(all_descriptors)} images from cache.")
-        return all_descriptors, all_labels
-    
+        all_keypoints = []
+        for img_kps in keypoints_from_pickle:
+            curr_tuple = []
+            for p in img_kps:
+
+                curr_tuple.append(cv2.KeyPoint(x=p[0], y=p[1], size=p[2], angle=p[3], 
+                                                    response=p[5], octave=p[4], class_id=p[6]))
+            curr_tuple = tuple(curr_tuple)
+
+            all_keypoints.append(curr_tuple)
+        return all_descriptors,all_keypoints,img_dimensions, all_labels
+        
     else:
         print(f"No cache found for {bovw.detector_type}. Extracting features...")
         all_descriptors = []
+        all_keypoints = []
         all_labels = []
+        img_dimensions = []
         
         for idx in tqdm.tqdm(range(len(dataset)), desc=f"Phase [Extracting {bovw.detector_type}]"):
             image, label = dataset[idx]
-            _, descriptors = bovw._extract_features(image=np.array(image))
+            keyponts, descriptors = bovw._extract_features(image=np.array(image))
             
             if descriptors is not None:
                 all_descriptors.append(descriptors)
                 all_labels.append(label)
-        
+                img_dimensions.append((image.height, image.width))
+                all_keypoints.append(keyponts)
+             
+
+        keypoints_to_pickle = []
+        for img_kps in all_keypoints:
+            tupled_keyps = []
+            for kp in img_kps:
+                tupled_keyps.append((kp.pt[0], kp.pt[1], kp.size, kp.angle, kp.octave, kp.response, kp.class_id))
+            tupled_keyps = tuple(tupled_keyps)
+            keypoints_to_pickle.append(tupled_keyps)
+
+
         print(f"Saving descriptors to {cache_file}...")
         with open(cache_file, "wb") as f:
-            pickle.dump((all_descriptors, all_labels), f)
+            pickle.dump((all_descriptors,keypoints_to_pickle,img_dimensions, all_labels), f)
             
-        return all_descriptors, all_labels
+        return all_descriptors,all_keypoints,img_dimensions, all_labels
 
 
 def run_dense_experiments(dataset_train, dataset_test):
@@ -436,8 +587,54 @@ def run_pca_experiments(dataset_train, dataset_test):
     print(df)
         
     
+def test_scalars(data_train):
 
+    print("standard")
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="standard")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+    print("minmax")
 
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="minmax")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+    print("l1")
+
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="l1")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+    print("l2")
+
+    
+
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="l2")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+    print("hellinger")
+
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="hellinger")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+    
+
+def testing_pyramids(data_train):
+
+    print("1_level")
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="l2")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+    print("2_level")
+
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=2,method="l2")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+    print("3_level")
+
+    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=3,method="l2")
+        # We rely on the CV score returned by train()
+    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
+
+    
 if __name__ == "__main__":
      #/home/cboned/data/Master/MIT_split
     print("Loading datasets...")
@@ -451,7 +648,14 @@ if __name__ == "__main__":
     # bovw, classifier = train(dataset=data_train, bovw=bovw, use_optimize=True)
     # test(dataset=data_test, bovw=bovw, classifier=classifier)
     
-    run_dense_experiments(dataset_train=data_train, dataset_test=data_test)
+    # run_dense_experiments(dataset_train=data_train, dataset_test=data_test)
     # run_pca_experiments(data_train, data_test)
+
+
+    
+   
+
+
+    
     
     

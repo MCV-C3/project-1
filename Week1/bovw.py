@@ -11,7 +11,9 @@ from typing import *
 
 class BOVW():
     
-    def __init__(self, detector_type="AKAZE", codebook_size:int=50, detector_kwargs:dict={}, codebook_kwargs:dict={}, pca_dim: int = None):
+    def __init__(self, detector_type="AKAZE", codebook_size:int=50, detector_kwargs:dict={}, codebook_kwargs:dict={}, pca_dim: int = None,pyramid_levels:int = 1,
+         normalize:bool = False, method: str = "None",
+         scalar:bool = False):
 
         self.detector_type = detector_type
         self.detector_kwargs = detector_kwargs
@@ -32,6 +34,15 @@ class BOVW():
         
         self.pca_dim = pca_dim
         self.pca_model = None
+
+
+        self.pyramid = pyramid_levels > 1
+        self.pyramid_levels = pyramid_levels
+        self.normalize = normalize
+        self.scalar = scalar
+
+        self.method = method
+        self.scaling = method != "None"
                
     ## Modify this function in order to be able to create a dense sift
     def _extract_features(self, image: Literal["H", "W", "C"]) -> Tuple:
@@ -76,19 +87,23 @@ class BOVW():
     
     def _compute_codebook_descriptor(self, descriptors: Literal["1 T d"], kmeans: Type[KMeans]) -> np.ndarray:
 
-        if self.pca_dim is not None and self.pca_model is not None:
-            descriptors = self.pca_model.transform(descriptors)
-        visual_words = kmeans.predict(descriptors)
-        
-        
         # Create a histogram of visual words
         codebook_descriptor = np.zeros(kmeans.n_clusters)
-        for label in visual_words:
-            codebook_descriptor[label] += 1
-        
-        # Normalize the histogram (optional)
-        codebook_descriptor = codebook_descriptor / np.linalg.norm(codebook_descriptor)
-        
+
+        if descriptors.shape[0] > 0:
+
+            if self.pca_dim is not None and self.pca_model is not None:
+                descriptors = self.pca_model.transform(descriptors)
+            visual_words = kmeans.predict(descriptors)
+            
+            
+            
+            for label in visual_words:
+                codebook_descriptor[label] += 1
+            
+            # Normalize the histogram (optional)
+            codebook_descriptor = codebook_descriptor / np.linalg.norm(codebook_descriptor)
+            
         return codebook_descriptor       
     
 
