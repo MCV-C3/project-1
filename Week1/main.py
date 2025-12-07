@@ -11,6 +11,7 @@ import os
 import pickle
 import optuna
 import pandas as pd
+from datetime import datetime
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score
@@ -27,217 +28,261 @@ from sklearn.preprocessing import Normalizer, StandardScaler
 from sklearn.preprocessing import Normalizer, StandardScaler, MinMaxScaler
 
 def apply_scaling(bovw_histograms, method="l2"):
-    
-
     if method == "standard":
         scaler = StandardScaler()
         return scaler.fit_transform(bovw_histograms)
-        
     elif method == "minmax":
         scaler = MinMaxScaler()
         return scaler.fit_transform(bovw_histograms)
-        
     elif method == "l1":
-        # Sum of vector = 1
         scaler = Normalizer(norm='l1')
         return scaler.transform(bovw_histograms)
-        
     elif method == "l2":
-        # Magnitude of vector = 1 (Standard for Linear SVM)
         scaler = Normalizer(norm='l2')
         return scaler.transform(bovw_histograms)
-        
-    elif method == "hellinger":
-        # L1 norm followed by Square root
-        scaler = Normalizer(norm='l1')
-        normed = scaler.transform(bovw_histograms)
-        return np.sqrt(normed)
+    return bovw_histograms
 
 
 def extract_bovw_histograms(bovw: Type[BOVW], descriptors: Literal["N", "T", "d"]):
     return np.array([bovw._compute_codebook_descriptor(descriptors=descriptor, kmeans=bovw.codebook_algo) for descriptor in descriptors])
 
-
-def pyramid_extract_bovw_histograms(bovw: Type[BOVW], 
-                                    all_descriptors: Literal["N", "T", "d"], 
-                                    all_keypoints, 
-                                    all_dimensions, 
-                                    levels: int = 2):
-   
+def pyramid_extract_bovw_histograms(bovw: Type[BOVW], all_descriptors, all_keypoints, all_dimensions, levels=2):
+    # [cite_start]Implements Spatial Pyramid Matching [cite: 667]
     pyramid_histograms = []
-
+    
     for level in range(1, levels + 1):
-        
-        
-        level_cells = [[[] for _ in range(len(all_descriptors))] for _ in range(level * level)]
+        num_cells = level * level
+        level_cells = [[[] for _ in range(len(all_descriptors))] for _ in range(num_cells)]
         
         for img_idx, (descriptors, keypoints, dimensions) in enumerate(zip(all_descriptors, all_keypoints, all_dimensions)):
-
             if descriptors is None or len(descriptors) == 0:
                 continue
 
             h, w = dimensions
-
             w_step = w / level
             h_step = h / level
             
             for kp, desc in zip(keypoints, descriptors):
                 x, y = kp.pt
-           
                 col = int(min(x // w_step, level - 1))
                 row = int(min(y // h_step, level - 1))
-                
-                # Map 2D grid (row, col) to 1D list index
                 cell_index = row * level + col
-                
                 level_cells[cell_index][img_idx].append(desc)
 
-        # Process the histograms for this level
         for cell_descriptors_per_image in level_cells:
-            # Convert lists to numpy arrays; handle cases where a cell might be empty in an image
-            formatted_descs = []
-            for d in cell_descriptors_per_image:    
-
-                formatted_descs.append(np.array(d))
-
-            # Compute histogram for this specific grid cell across all images
+            formatted_descs = [np.array(d) if len(d)>0 else np.zeros((0, 128)) for d in cell_descriptors_per_image]
             cell_hist = extract_bovw_histograms(descriptors=formatted_descs, bovw=bovw)
             pyramid_histograms.append(cell_hist)
 
-    # Concatenate all histograms (Global + Level 2 cells + Level 3 cells...)
     return np.concatenate(pyramid_histograms, axis=1)
 
-#OLD WITH OPTUNA
-# def optimize_codebook_size(tector_type="AKAZE", n_trials=10):
-#     # Run optuna to find best k using croall_descriptors, all_labels, dess-validation
-    
-#     def objective(trial):
-        
-#         #select the k value
-#         k = trial.suggest_int("k", 20, 200, step=20)
-        
-#         #perform kmeans and fit the codebook
-#         trial_bovw = BOVW(detector_type=detector_type, codebook_size=k)
-#         trial_bovw._update_fit_codebook(descriptors=all_descriptors)
-        
-#         # create the histograms
-#         x_histograms = extract_bovw_histograms(trial_bovw, all_descriptors)
-        
-#         #cross-validate classifier
-#         clf = LogisticRegression(class_weight="balanced", solver="lbfgs")
-#         scores = cross_val_score(clf, x_histograms, all_labels, cv=5, scoring='accuracy')
-#         return scores.mean()
-    
-#     #surpress optuna big logs
-#     optuna.logging.set_verbosity(optuna.logging.WARNING)
-        
-#     study = optuna.create_study(direction="maximize")
-#     study.optimize(objective, n_trials=n_trials)
-    
-#     #log everything to keep the results
-#     results_df = study.trials_dataframe()
-    
-#     # Save to CSV (e.g., "tuning_k_AKAZE.csv")
-#     csv_filename = f"experiment_log_k_{detector_type}.csv"
-#     results_df.to_csv(csv_filename, index=False)
-#     print(f"Logged all {n_trials} trials to {csv_filename}")
-    
-#     print(f"Best K found: {study.best_params['k']} with accuracy: {study.best_value:.4f}")
-#     print("-------------------------------------------------------")
-    
-#     return study.best_params['k']
 
 
-#NEW WITHOUT OPTUNA
-def optimize_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", k_values=[50, 100, 200, 400]):
+def get_descriptors(dataset, bovw, cache_dir="cache"):
     """
-    Manually tests different k values using Cross-Validation and returns the best one.
-    Replaces Optuna.
+    Smart Cache Logic:
+    - DENSE_SIFT: Always recalculates (params vary).
+    - SIFT/ORB/AKAZE: Loads from disk cache if exists.
     """
+    # 1. Handling Dense SIFT
+    if bovw.detector_type == 'DENSE_SIFT':
+        print(f"Detector is DENSE_SIFT. Skipping cache to ensure correct parameters...")
+        all_descriptors, all_keypoints, img_dimensions, all_labels = [], [], [], []
+        
+        for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Extracting Dense Features]"):
+            image, label = dataset[idx]
+            keypoints, descriptors = bovw._extract_features(image=np.array(image))
+            
+            if descriptors is not None:
+                all_descriptors.append(descriptors)
+                all_labels.append(label)
+                img_dimensions.append((image.height, image.width))
+                all_keypoints.append(keypoints)
+                
+        return all_descriptors, all_keypoints, img_dimensions, all_labels
+
+    # 2. Handling Standard Detectors (Use Cache)
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f"train_descriptors_{bovw.detector_type}.pkl")
+    
+    if os.path.exists(cache_file):
+        print(f"Loading cached descriptors from {cache_file}...")
+        try:
+            with open(cache_file, "rb") as f:
+                all_descriptors, keypoints_data, img_dimensions, all_labels = pickle.load(f)
+            
+            # Reconstruct cv2.KeyPoints
+            all_keypoints = []
+            for img_kps in keypoints_data:
+                kps = tuple([cv2.KeyPoint(x=p[0], y=p[1], size=p[2], angle=p[3], response=p[5], octave=p[4], class_id=p[6]) for p in img_kps])
+                all_keypoints.append(kps)
+                
+            print(f"Loaded {len(all_descriptors)} images from cache.")
+            return all_descriptors, all_keypoints, img_dimensions, all_labels
+        except Exception as e:
+            print(f"Cache load failed ({e}). Re-extracting...")
+
+    print(f"No cache found for {bovw.detector_type}. Extracting features...")
+    all_descriptors, all_keypoints, img_dimensions, all_labels = [], [], [], []
+    
+    for idx in tqdm.tqdm(range(len(dataset)), desc=f"Phase [Extracting {bovw.detector_type}]"):
+        image, label = dataset[idx]
+        keypoints, descriptors = bovw._extract_features(image=np.array(image))
+        
+        if descriptors is not None:
+            all_descriptors.append(descriptors)
+            all_labels.append(label)
+            img_dimensions.append((image.height, image.width))
+            all_keypoints.append(keypoints)
+
+    # Save to cache (Convert keypoints to tuples)
+    keypoints_to_pickle = []
+    for img_kps in all_keypoints:
+        tupled_kps = tuple([(kp.pt[0], kp.pt[1], kp.size, kp.angle, kp.octave, kp.response, kp.class_id) for kp in img_kps])
+        keypoints_to_pickle.append(tupled_kps)
+
+    with open(cache_file, "wb") as f:
+        pickle.dump((all_descriptors, keypoints_to_pickle, img_dimensions, all_labels), f)
+        
+    return all_descriptors, all_keypoints, img_dimensions, all_labels
+
+def manual_grid_search_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", k_values=[50, 100]):
     print(f"\n--- Starting Manual Grid Search for K ---")
-    print(f"Values to test: {k_values}")
-    
     results = []
     
     for k in k_values:
-        print(f"\nTesting codebook size k={k}...")
-        
-        # 1. Create temporary BoVW
+        print(f"Testing k={k}...")
         trial_bovw = BOVW(detector_type=detector_type, codebook_size=k)
-        
-        # 2. Fit Codebook (K-Means)
-        # This is the heavy part
         trial_bovw._update_fit_codebook(descriptors=all_descriptors)
-        
-        # 3. Create Histograms
         X_histograms = extract_bovw_histograms(trial_bovw, all_descriptors)
         
-        # 4. Cross-Validate Classifier
-        # n_jobs=None prevents Windows crash
-        clf = LogisticRegression(class_weight="balanced", solver='lbfgs', n_jobs=None, max_iter=2000)
+        # Fast Linear SVM for K search
+        clf = LinearSVC(class_weight="balanced", dual="auto", max_iter=2000)
+        scores = cross_val_score(clf, X_histograms, all_labels, cv=3, scoring='accuracy', n_jobs=None)
         
-        # 5-Fold CV
-        scores = cross_val_score(clf, X_histograms, all_labels, cv=5, scoring='accuracy')
-        mean_acc = scores.mean()
-        std_acc = scores.std()
-        
-        print(f" -> Accuracy: {mean_acc:.4f} (+/- {std_acc:.4f})")
-        
-        results.append({
-            "k": k,
-            "mean_acc": mean_acc,
-            "std_acc": std_acc
-        })
+        results.append({"k": k, "mean_acc": scores.mean()})
 
-    # Find best k
     best_result = max(results, key=lambda x: x['mean_acc'])
-    print("\n-------------------------------------------------------")
-    print(f"Best K found: {best_result['k']} with accuracy: {best_result['mean_acc']:.4f}")
-    print("-------------------------------------------------------")
-    
-    # Save log to CSV (Manual logging)
-    df = pd.DataFrame(results)
-    csv_filename = f"manual_grid_search_k_{detector_type}.csv"
-    df.to_csv(csv_filename, index=False)
-    print(f"Results saved to {csv_filename}")
-    
+    print(f"Best K found: {best_result['k']} (Acc: {best_result['mean_acc']:.4f})")
     return best_result['k']
+
+
+def test(dataset: List[Tuple[Type[Image.Image], int]], 
+         bovw: Type[BOVW], 
+         classifier: Type[object]):
+    
+    test_descriptors = []
+    descriptors_labels = []
+    test_keypoints = []
+    test_dimensions = []
+
+    # 1. Extract Features from Test Set
+    for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Eval]"):
+        image, label = dataset[idx]
+        
+        # We need keypoints for Spatial Pyramid, descriptors for everything
+        keypoints, descriptors = bovw._extract_features(image=np.array(image))
+        
+        if descriptors is not None:
+            test_descriptors.append(descriptors)
+            descriptors_labels.append(label)
+            # Store dimensions/keypoints for Pyramid logic
+            test_dimensions.append((image.height, image.width))
+            test_keypoints.append(keypoints)
+            
+    # 2. Compute Histograms (Pyramid vs Standard)
+    if bovw.pyramid:
+        # print("Computing Pyramid Histograms (Test)...")
+        bovw_histograms = pyramid_extract_bovw_histograms(
+            bovw, 
+            test_descriptors, 
+            test_keypoints, 
+            test_dimensions, 
+            levels=bovw.pyramid_levels
+        )
+    else:
+        # print("Computing Standard Histograms (Test)...")
+        bovw_histograms = extract_bovw_histograms(bovw, test_descriptors)
+        
+    # 3. Apply Scaling (if enabled in BoVW object)
+    if bovw.scaling:
+        bovw_histograms = apply_scaling(bovw_histograms, bovw.method)
+        
+    # 4. Predict & Evaluate
+    y_pred = classifier.predict(bovw_histograms)
+    acc = accuracy_score(y_true=descriptors_labels, y_pred=y_pred)
+    
+    print(f"Test Accuracy: {acc:.4f}")
+    
+    # CRITICAL: Return the score so run_final_pipeline can save it!
+    return acc
 
 def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=None):
 
-    classifiers = {
-        "log_reg": LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=1000),
-        "svm_linear": LinearSVC(class_weight="balanced", dual="auto", max_iter=2000),        
-        "svm_rbf": SVC(kernel="rbf", class_weight="balanced", cache_size=1000, max_iter=5000),
-        "knn": KNeighborsClassifier(n_neighbors=5),
-        "rf": RandomForestClassifier(n_estimators=100)
+    # 1. Classifiers that NEED tuning (Linear models)
+    # We will search for the best 'C' parameter for these
+    tunable_classifiers = {
+        "log_reg": LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000, n_jobs=None),
+        "svm_linear": LinearSVC(class_weight="balanced", dual="auto", max_iter=2000) 
+    }
+    
+    # 2. Classifiers that are usually fine with defaults (or too slow to tune in a loop)
+    fixed_classifiers = {
+        "knn": KNeighborsClassifier(n_neighbors=5, n_jobs=None),
+        "rf": RandomForestClassifier(n_estimators=100, n_jobs=None),
+        # RBF SVM is slow, so we use fixed params or a very small cache
+        "svm_rbf": SVC(kernel="rbf", class_weight="balanced", cache_size=1000) 
     }
 
     results = {}
-
-    for name, clf in classifiers.items():
-
-        print(f"\nEvaluating classifier: {name}")
-        scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy", n_jobs=None)
+    
+    # --- A. Tuning Loop (Recovers your lost accuracy) ---
+    # Small grid to keep it fast but effective
+    param_grid = {'C': [0.001, 0.01, 0.1, 1, 10]} 
+    
+    for name, clf in tunable_classifiers.items():
+        print(f"\nTuning & Evaluating: {name}...")
+        
+        # GridSearchCV automatically finds the best C using 3-fold CV
+        gs = GridSearchCV(clf, param_grid, cv=3, scoring='accuracy', n_jobs=None)
+        
+        # nested cross_val_score evaluates the "process of finding the best C"
+        scores = cross_val_score(gs, X, y, cv=cv, scoring="accuracy", n_jobs=None)
+        
         mean_acc = scores.mean()
         std_acc = scores.std()
         print(f"  CV accuracy: {mean_acc:.4f} ± {std_acc:.4f}")
         results[name] = (mean_acc, std_acc)
 
-    best_name = max(results, key=lambda k: results[k][0])  # highest mean acc
+    # --- B. Fixed Loop ---
+    for name, clf in fixed_classifiers.items():
+        print(f"\nEvaluating: {name}...")
+        scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy", n_jobs=None)
+        
+        mean_acc = scores.mean()
+        std_acc = scores.std()
+        print(f"  CV accuracy: {mean_acc:.4f} ± {std_acc:.4f}")
+        results[name] = (mean_acc, std_acc)
+
+    # Pick the best
+    best_name = max(results, key=lambda k: results[k][0])
     best_mean, best_std = results[best_name]
 
     print("-" * 30)
-    print(f"Best classifier: {best_name} with {best_mean:.4f} ± {best_std:.4f}")
+    print(f"Best classifier: {best_name} with {best_mean:.4f}")
     print("-" * 30)
 
+    # --- Logging ---
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+    # Ensure values are not None for CSV
+    d_type = detector_type if detector_type else "Unknown"
+    c_size = codebook_size if codebook_size else 0
+    
     df = pd.DataFrame([
         {
             "timestamp": timestamp,
-            "detector_type": detector_type,
-            "codebook_size": codebook_size,
+            "detector_type": d_type,
+            "codebook_size": c_size,
             "classifier": name,
             "mean_acc": acc[0],
             "std_acc": acc[1]
@@ -252,460 +297,158 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
         header=not os.path.exists("classifier_experiments_log.csv")  
     )
 
-    print("Saved classifier results to classifier_experiments_log.csv")
-
     return best_name, results
 
-
-def test(dataset: List[Tuple[Type[Image.Image], int]]
-         , bovw: Type[BOVW], 
-         classifier:Type[object],
-         ):
+# --- MAIN TRAIN FUNCTION ---
+def train(dataset, bovw: Type[BOVW], use_optimize: bool = True):
     
-    test_descriptors = []
-    descriptors_labels = []
+    # 1. Feature Extraction
+    all_descriptors, all_keypoints, img_dimensions, all_labels = get_descriptors(dataset, bovw)
     
-    test_keypoints = []
-    test_dimensions = []
+    det_type = "AKAZE"
+    if "SIFT" in str(bovw.detector): det_type = "SIFT"
+    elif "ORB" in str(bovw.detector): det_type = "ORB"
 
-
-    for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Eval]: Extracting the descriptors"):
-        image, label = dataset[idx]
-        keyponts, descriptors = bovw._extract_features(image=np.array(image))
-        
-        if descriptors is not None:
-            test_descriptors.append(descriptors)
-            descriptors_labels.append(label)
-
-            test_dimensions.append((image.height, image.width))
-            test_keypoints.append(keyponts)
-            
-    if bovw.pyramid:
-        print("Computing the pyramid bovw histograms")
-        
-        bovw_histograms = pyramid_extract_bovw_histograms(all_descriptors=test_descriptors, bovw=bovw,all_keypoints=test_keypoints,all_dimensions=test_dimensions,levels=bovw.pyramid_levels)
-        
-    
-    else:
-        print("Computing the bovw histograms")
-        bovw_histograms = extract_bovw_histograms(descriptors=test_descriptors, bovw=bovw)
-        
-    
-    if bovw.scaling:
-        
-        bovw_histograms = apply_scaling(bovw_histograms,bovw.method)
-
-
-        
-    print("predicting the values")
-    y_pred = classifier.predict(bovw_histograms)
-    
-    print("Accuracy on Phase[Test]:", accuracy_score(y_true=descriptors_labels, y_pred=y_pred))
-    
-
-def train(dataset: List[Tuple[Type[Image.Image], int]],
-          bovw: Type[BOVW],
-          use_optimize: bool = True,
-         ):
-
-
-    # for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Training]: Extracting the descriptors"):
-
-    #     image, label = dataset[idx]
-    #     _, descriptors = bovw._extract_features(image=np.array(image))
-
-    #     if descriptors is not None:
-    #         all_descriptors.append(descriptors)
-    #         all_labels.append(label)
-
-    all_descriptors,all_keypoints,img_dimensions, all_labels = get_descriptors(dataset, bovw)
-    print(f"Extracted descriptors from {len(all_descriptors)} images.")
-
-    # --- Determine detector type string for logging/Optuna ---
-    det_type = "AKAZE"  # default
-    if hasattr(bovw.detector, "getDefaultName"):
-        name = bovw.detector.getDefaultName()
-        if "SIFT" in name:
-            det_type = "SIFT"
-        elif "ORB" in name:
-            det_type = "ORB"
-        else:
-            det_type = "AKAZE"
-    else:
-        # fallback to checking string repr
-        if "SIFT" in str(bovw.detector):
-            det_type = "SIFT"
-        elif "ORB" in str(bovw.detector):
-            det_type = "ORB"
-        else:
-            det_type = "AKAZE"
-
-    # --- OPTIONAL: OPTIMIZE CODEBOOK SIZE (k) WITH OPTUNA ---
+    # 2. Optimization
     if use_optimize:
-        k_grid = [64, 128, 256, 512, 1024]
-        best_k = optimize_codebook_size(
-            all_descriptors,
-            all_labels,
-            detector_type=det_type,
-            k_values=k_grid
-        )
-        # Update the main BOVW object with best k
+        k_grid = [64, 128, 256, 512]
+        best_k = manual_grid_search_codebook_size(all_descriptors, all_labels, detector_type=det_type, k_values=k_grid)
         bovw.codebook_size = best_k
-        bovw.codebook_algo = MiniBatchKMeans(
-            n_clusters=best_k, batch_size=2048, random_state=42
-        )
+        bovw.codebook_algo = MiniBatchKMeans(n_clusters=best_k, batch_size=2048, random_state=42)
 
-    # --- FINAL TRAINING (with current k, optimized or not) ---
-    print(f"Fitting the final codebook (k={bovw.codebook_size})...")
+    # 3. Final Codebook
+    print(f"Fitting final codebook (k={bovw.codebook_size})...")
     bovw._update_fit_codebook(descriptors=all_descriptors)
 
-  
+    # 4. Histograms
     if bovw.pyramid:
-        print("Computing the pyramid bovw histograms")
-        
-        bovw_histograms = pyramid_extract_bovw_histograms(all_descriptors=all_descriptors, bovw=bovw,all_keypoints=all_keypoints,all_dimensions=img_dimensions,levels=bovw.pyramid_levels)
-        
-    
+        print(f"Computing Pyramid Histograms (Levels={bovw.pyramid_levels})...")
+        bovw_histograms = pyramid_extract_bovw_histograms(bovw, all_descriptors, all_keypoints, img_dimensions, levels=bovw.pyramid_levels)
     else:
-        print("Computing the bovw histograms")
-        bovw_histograms = extract_bovw_histograms(descriptors=all_descriptors, bovw=bovw)
-        
-    
-    if bovw.normalize:
-        
-        normalizer = Normalizer(norm='l2')
-        bovw_histograms = normalizer.fit_transform(bovw_histograms)
+        print("Computing Standard Histograms...")
+        bovw_histograms = extract_bovw_histograms(bovw, all_descriptors)
 
+    # 5. Scaling
+    if bovw.scaling:
+        bovw_histograms = apply_scaling(bovw_histograms, bovw.method)
 
-    if bovw.scalar:
-
-        scaler = StandardScaler()
-        bovw_histograms = scaler.fit_transform(bovw_histograms)
-
-    # --- Evaluate multiple classifiers ---
-    best_clf_name, clf_results = evaluate_multiple_classifiers(
-        bovw_histograms,
-        all_labels,
-        cv=5,
-        detector_type=det_type,
-        codebook_size=bovw.codebook_size
-    )
-    print(f"Training final classifier: {best_clf_name}")
-
-    # Get best CV score for logging / dense experiments
+    # 6. Evaluation
+    best_clf_name, clf_results = evaluate_multiple_classifiers(bovw_histograms, all_labels, cv=5)
     best_cv_score = clf_results[best_clf_name][0]
-
-    # --- Instantiate and train the final classifier according to best_clf_name ---
-    if best_clf_name == "log_reg":
-        final_clf = LogisticRegression(class_weight="balanced",
-                                       solver="lbfgs",
-                                       max_iter=2000)
-
-    elif best_clf_name == "svm_linear":
-        final_clf = LinearSVC(class_weight="balanced", dual="auto", max_iter=2000)
-
-    elif best_clf_name == "svm_rbf":
-        final_clf = SVC(kernel="rbf",
-                        class_weight="balanced",
-                        probability=True)
-
-    elif best_clf_name == "knn":
-        final_clf = KNeighborsClassifier(n_neighbors=5)
-
-    elif best_clf_name == "rf":
-        final_clf = RandomForestClassifier(n_estimators=200)
-
-    else:
-        raise ValueError("Unknown classifier name returned")
-
+    
+    # 7. Final Training
+    print(f"Training final model ({best_clf_name})...")
+    if best_clf_name == "log_reg": final_clf = LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000)
+    elif best_clf_name == "svm_linear": final_clf = LinearSVC(class_weight="balanced", dual="auto", max_iter=2000)
+    elif best_clf_name == "svm_rbf": final_clf = SVC(kernel="rbf", class_weight="balanced", probability=True)
+    elif best_clf_name == "knn": final_clf = KNeighborsClassifier(n_neighbors=5)
+    elif best_clf_name == "rf": final_clf = RandomForestClassifier(n_estimators=100)
+    
     final_clf.fit(bovw_histograms, all_labels)
-
-    # IMPORTANT: keep the same return signature so run_dense_experiments still works
+    
     return bovw, final_clf, best_cv_score
 
-
-
 def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.Image], int]]:
-
-    """
-    Expected Structure:
-
-        ImageFolder/<cls label>/xxx1.png
-        ImageFolder/<cls label>/xxx2.png
-        ImageFolder/<cls label>/xxx3.png
-        ...
-
-        Example:
-            ImageFolder/cat/123.png
-            ImageFolder/cat/nsdf3.png
-            ImageFolder/cat/[...]/asd932_.png
-    
-    """
-
-    map_classes = {clsi: idx for idx, clsi  in enumerate(os.listdir(ImageFolder))}
-    
-    dataset :List[Tuple] = []
-
+    map_classes = {clsi: idx for idx, clsi in enumerate(os.listdir(ImageFolder))}
+    dataset = []
     for idx, cls_folder in enumerate(os.listdir(ImageFolder)):
-
         image_path = os.path.join(ImageFolder, cls_folder)
-        images: List[str] = glob.glob(image_path+"/*.jpg")
+        images = glob.glob(image_path+"/*.jpg")
         for img in images:
             img_pil = Image.open(img).convert("RGB")
-
             dataset.append((img_pil, map_classes[cls_folder]))
-
-
     return dataset
 
-def get_descriptors(dataset, bovw, cache_dir="cache"):
-    """
-    Smart feature extraction:
-    - If Standard SIFT/ORB/AKAZE: Tries to load from disk cache.
-    - If DENSE_SIFT: Always re-calculates (because parameters change).
-    """
-    # 1. Handling Dense SIFT (Always Recalculate)
-    if bovw.detector_type == 'DENSE_SIFT':
-        print(f"Detector is DENSE_SIFT. Skipping cache to ensure correct parameters...")
-        all_descriptors = []
-        all_keypoints = []
-        all_labels = []
-        img_dimensions = []
-
-
-        for idx in tqdm.tqdm(range(len(dataset)), desc="Phase [Extracting Dense Features]"):
-            image, label = dataset[idx]
-            keyponts, descriptors = bovw._extract_features(image=np.array(image))
-            if descriptors is not None:
-                all_descriptors.append(descriptors)
-                all_labels.append(label)
-                img_dimensions.append((image.height, image.width))
-                all_keypoints.append(keyponts)
-        return all_descriptors,all_keypoints,img_dimensions, all_labels
-
-    # 2. Handling Standard Detectors (Use Cache)
-    os.makedirs(cache_dir, exist_ok=True)
-    cache_file = os.path.join(cache_dir, f"train_descriptors_{bovw.detector_type}.pkl")
+# --- FINAL PIPELINE RUNNER ---
+def run_final_pipeline(data_train, data_test):
+    print("\n" + "="*50)
+    print("STARTING FINAL TESTING PIPELINE")
+    print("Strategy: Change ONE parameter at a time (Baseline: SIFT, k=128, LogReg)")
+    print("="*50 + "\n")
     
-    if os.path.exists(cache_file):
-        print(f"Loading cached descriptors from {cache_file}...")
-        with open(cache_file, "rb") as f:
-            all_descriptors,keypoints_from_pickle,img_dimensions, all_labels = pickle.load(f)
-        print(f"Loaded {len(all_descriptors)} images from cache.")
-        all_keypoints = []
-        for img_kps in keypoints_from_pickle:
-            curr_tuple = []
-            for p in img_kps:
-
-                curr_tuple.append(cv2.KeyPoint(x=p[0], y=p[1], size=p[2], angle=p[3], 
-                                                    response=p[5], octave=p[4], class_id=p[6]))
-            curr_tuple = tuple(curr_tuple)
-
-            all_keypoints.append(curr_tuple)
-        return all_descriptors,all_keypoints,img_dimensions, all_labels
-        
-    else:
-        print(f"No cache found for {bovw.detector_type}. Extracting features...")
-        all_descriptors = []
-        all_keypoints = []
-        all_labels = []
-        img_dimensions = []
-        
-        for idx in tqdm.tqdm(range(len(dataset)), desc=f"Phase [Extracting {bovw.detector_type}]"):
-            image, label = dataset[idx]
-            keyponts, descriptors = bovw._extract_features(image=np.array(image))
+    results = []
+    
+    # --- HELPER TO RUN AND LOG ---
+    def run_experiment(exp_name, param_name, param_value, bovw_obj):
+        print(f"\n[Experiment: {exp_name}] Testing {param_name} = {param_value}...")
+        try:
+            # 1. TRAIN on Training Data (Get CV Score)
+            # This ensures the model is fitted on the training set
+            trained_bovw, trained_clf, cv_score = train(data_train, bovw_obj, use_optimize=False)
             
-            if descriptors is not None:
-                all_descriptors.append(descriptors)
-                all_labels.append(label)
-                img_dimensions.append((image.height, image.width))
-                all_keypoints.append(keyponts)
-             
-
-        keypoints_to_pickle = []
-        for img_kps in all_keypoints:
-            tupled_keyps = []
-            for kp in img_kps:
-                tupled_keyps.append((kp.pt[0], kp.pt[1], kp.size, kp.angle, kp.octave, kp.response, kp.class_id))
-            tupled_keyps = tuple(tupled_keyps)
-            keypoints_to_pickle.append(tupled_keyps)
-
-
-        print(f"Saving descriptors to {cache_file}...")
-        with open(cache_file, "wb") as f:
-            pickle.dump((all_descriptors,keypoints_to_pickle,img_dimensions, all_labels), f)
+            # 2. TEST on Test Data (Get Test Score)
+            # This is critical for your report plots
+            test_score = test(data_test, trained_bovw, trained_clf)
             
-        return all_descriptors,all_keypoints,img_dimensions, all_labels
+            # 3. Log BOTH scores
+            results.append({
+                "Experiment": exp_name, 
+                "Parameter": param_name, 
+                "Value": str(param_value), 
+                "CV_Accuracy": cv_score,    # Validation Performance
+                "Test_Accuracy": test_score # Generalization Performance
+            })
+            
+            # Save incrementally
+            pd.DataFrame(results).to_csv("final_experiment_results.csv", index=False)
+            
+        except Exception as e:
+            print(f"!!! Error in {exp_name}: {e}")
 
+    # 1. DETECTOR COMPARISON
+    for det in ["SIFT", "ORB", "AKAZE"]:
+        bovw = BOVW(detector_type=det, codebook_size=128)
+        run_experiment("Detectors", "Detector", det, bovw)
 
-def run_dense_experiments(dataset_train, dataset_test):
-    results_log = []
+    # 2. CODEBOOK SIZE
+    for k in [64, 128, 256, 512, 1024]:
+        bovw = BOVW(detector_type="SIFT", codebook_size=k)
+        run_experiment("Codebook Size", "k", k, bovw)
 
-    print("=== EXPERIMENT 1: Standard vs Dense SIFT ===")
-    
-    # 1. Standard SIFT (Baseline)
-    print("\nRunning Standard SIFT...")
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128)
-    # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(dataset_train, bovw_std, use_optimize=False)
-    
-    results_log.append({
-        "Experiment": "Type Comparison",
-        "Detector": "Standard SIFT", 
-        "Step Size": "N/A", 
-        "Scales": "Default", 
-        "CV Accuracy": cv_score_std
-    })
+    # 3. DENSE SIFT STEPS
+    for step in [30, 20, 15]:
+        bovw = BOVW(detector_type="DENSE_SIFT", codebook_size=128, detector_kwargs={'step_size': step, 'scales': [8]})
+        run_experiment("Dense SIFT Step", "Step Size", step, bovw)
 
-    # 2. Dense SIFT - Step Size Analysis
-    print("\nRunning Dense SIFT Step Sizes...")
-    steps = [30, 20, 10] # Smaller step = more dense = usually better but slower
-    
-    for step in steps:
-        print(f"Testing Step Size: {step}")
-        bovw_dense = BOVW(
-            detector_type='DENSE_SIFT', 
-            codebook_size= 128, # Keep k fixed for fair comparison
-            detector_kwargs={'step_size': step, 'scales': [8]}
-        )
-        _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)
-        
-        results_log.append({
-            "Experiment": "Step Size",
-            "Detector": "Dense SIFT", 
-            "Step Size": step, 
-            "Scales": "[8]", 
-            "CV Accuracy": cv_score
-        })
-
-    # 3. Dense SIFT - Scale Analysis
-    print("\nRunning Dense SIFT Scale Analysis...")
-    # Does scale play a role? We test small, large, and multi-scale.
-    scale_configs = [ 
-        ([4], "Small"), 
-        ([16], "Large"), 
-        ([4, 8, 12, 16], "Multi-Scale") 
-    ]
-    
+    # 4. DENSE SIFT SCALES
+    scale_configs = [([4], "Small"), ([16], "Large"), ([4, 8, 12, 16], "Multi")]
     for scales, name in scale_configs:
-        print(f"Testing Scales: {name} {scales}")
-        bovw_dense = BOVW(
-            detector_type='DENSE_SIFT', 
-            codebook_size=128,
-            detector_kwargs={'step_size': 15, 'scales': scales} # Fix step to 15
-        )
-        _, _, cv_score = train(dataset_train, bovw_dense, use_optimize=False)
-        
-        results_log.append({
-            "Experiment": "Scale Analysis",
-            "Detector": "Dense SIFT", 
-            "Step Size": 15, 
-            "Scales": str(scales), 
-            "CV Accuracy": cv_score
-        })
+        bovw = BOVW(detector_type="DENSE_SIFT", codebook_size=128, detector_kwargs={'step_size': 15, 'scales': scales})
+        run_experiment("Dense SIFT Scales", "Scales", name, bovw)
 
-    # Save Results
-    df = pd.DataFrame(results_log)
-    df.to_csv("results_dense_sift.csv", index=False)
-    print("\nExperiments Complete! Results saved to results_dense_sift.csv")
-    print(df)
-    
-    
-    
-    
-def run_pca_experiments(dataset_train, dataset_test):
-    results_log = []
-    print("\nEXPERIMENT: Dimensionality Reduction (PCA)")
-    
-    # We test SIFT because it has 128 dims, ORB/AKAZE binary/smaller. 
+    # 5. PCA (Dimensionality Reduction)
+    for dim in [None, 80, 64, 32]:
+        val = dim if dim else "128 (Original)"
+        bovw = BOVW(detector_type="SIFT", codebook_size=128, pca_dim=dim)
+        run_experiment("PCA", "Dimensions", val, bovw)
 
-    # Dimensions to test: None , 80, 64, 32, 16
-    pca_configs = [None, 80, 64, 32, 16] 
-    
-    for pca_dim in pca_configs:
-        
-        print(f"\nTesting PCA Dimension: {pca_dim if pca_dim else 'Original (128)'}")
-        bovw = BOVW(detector_type='SIFT', codebook_size=128, pca_dim=pca_dim)
-        
-        _, _, cv_score = train(dataset_train, bovw, use_optimize=False)
-        
-        results_log.append({
-            "Experiment": "PCA Analysis",
-            "Detector": "SIFT",
-            "PCA Dimensions": pca_dim if pca_dim else 128,
-            "CV Accuracy": cv_score
-        })
+    # 6. SPATIAL PYRAMIDS
+    for lvl in [1, 2, 3]:
+        bovw = BOVW(detector_type="SIFT", codebook_size=128, pyramid_levels=lvl)
+        run_experiment("Spatial Pyramid", "Levels", lvl, bovw)
 
-    # Save results
-    df = pd.DataFrame(results_log)
-    df.to_csv("results_pca_experiment.csv", index=False)
-    print("\nPCA Experiments Complete! Saved to results_pca_experiment.csv")
-    print(df)
+    # 7. SCALING / NORMALIZATION (Added this)
+    for method in ["None", "l1", "l2", "standard", "minmax", "hellinger"]:
+        bovw = BOVW(detector_type="SIFT", codebook_size=128, method=method)
+        run_experiment("Scaling", "Method", method, bovw)
+
+    print("\n" + "="*50)
+    print("PIPELINE COMPLETE. Final results saved to final_experiment_results.csv")
+    print("="*50)
         
     
-def test_scalars(data_train):
 
-    print("standard")
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="standard")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-    print("minmax")
-
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="minmax")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-    print("l1")
-
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="l1")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-    print("l2")
-
-    
-
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="l2")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-    print("hellinger")
-
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="hellinger")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-    
-
-def testing_pyramids(data_train):
-
-    print("1_level")
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=1,method="l2")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-    print("2_level")
-
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=2,method="l2")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-    print("3_level")
-
-    bovw_std = BOVW(detector_type='SIFT', codebook_size=128,pyramid_levels=3,method="l2")
-        # We rely on the CV score returned by train()
-    _, _, cv_score_std = train(data_train, bovw_std, use_optimize=False)
-
-    
 if __name__ == "__main__":
-     #/home/cboned/data/Master/MIT_split
-    print("Loading datasets...")
+# 1. Load Train Data
+    print("Loading Train Dataset...")
     data_train = Dataset(ImageFolder="../places_reduced/train")
-    print("Train dataset loaded with", len(data_train), "images.")
-    data_test = Dataset(ImageFolder="../places_reduced/val")
-    print("Test dataset loaded with", len(data_test), "images.")
-
-    print("Results for SIFT detector:")
-    bovw = BOVW(detector_type='SIFT')
-    bovw, classifier, _ = train(dataset=data_train, bovw=bovw, use_optimize=True)
-    test(dataset=data_test, bovw=bovw, classifier=classifier)
     
-    # run_dense_experiments(dataset_train=data_train, dataset_test=data_test)
-    # run_pca_experiments(data_train, data_test)
+    # 2. Load Test Data (This was missing)
+    print("Loading Test Dataset...")
+    data_test = Dataset(ImageFolder="../places_reduced/val") # or 'val' depending on your folder name
+    
+    # 3. Run the pipeline with BOTH datasets
+    run_final_pipeline(data_train, data_test)
 
 
     
