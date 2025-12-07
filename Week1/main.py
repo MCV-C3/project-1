@@ -18,6 +18,7 @@ from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.cluster import MiniBatchKMeans
 
 from sklearn.svm import SVC
+from sklearn.svm import LinearSVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from datetime import datetime
@@ -106,51 +107,108 @@ def pyramid_extract_bovw_histograms(bovw: Type[BOVW],
     # Concatenate all histograms (Global + Level 2 cells + Level 3 cells...)
     return np.concatenate(pyramid_histograms, axis=1)
 
-def optimize_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", n_trials=10):
-    # Run optuna to find best k using cross-validation
+#OLD WITH OPTUNA
+# def optimize_codebook_size(tector_type="AKAZE", n_trials=10):
+#     # Run optuna to find best k using croall_descriptors, all_labels, dess-validation
     
-    def objective(trial):
+#     def objective(trial):
         
-        #select the k value
-        k = trial.suggest_int("k", 20, 200, step=20)
+#         #select the k value
+#         k = trial.suggest_int("k", 20, 200, step=20)
         
-        #perform kmeans and fit the codebook
+#         #perform kmeans and fit the codebook
+#         trial_bovw = BOVW(detector_type=detector_type, codebook_size=k)
+#         trial_bovw._update_fit_codebook(descriptors=all_descriptors)
+        
+#         # create the histograms
+#         x_histograms = extract_bovw_histograms(trial_bovw, all_descriptors)
+        
+#         #cross-validate classifier
+#         clf = LogisticRegression(class_weight="balanced", solver="lbfgs")
+#         scores = cross_val_score(clf, x_histograms, all_labels, cv=5, scoring='accuracy')
+#         return scores.mean()
+    
+#     #surpress optuna big logs
+#     optuna.logging.set_verbosity(optuna.logging.WARNING)
+        
+#     study = optuna.create_study(direction="maximize")
+#     study.optimize(objective, n_trials=n_trials)
+    
+#     #log everything to keep the results
+#     results_df = study.trials_dataframe()
+    
+#     # Save to CSV (e.g., "tuning_k_AKAZE.csv")
+#     csv_filename = f"experiment_log_k_{detector_type}.csv"
+#     results_df.to_csv(csv_filename, index=False)
+#     print(f"Logged all {n_trials} trials to {csv_filename}")
+    
+#     print(f"Best K found: {study.best_params['k']} with accuracy: {study.best_value:.4f}")
+#     print("-------------------------------------------------------")
+    
+#     return study.best_params['k']
+
+
+#NEW WITHOUT OPTUNA
+def optimize_codebook_size(all_descriptors, all_labels, detector_type="AKAZE", k_values=[50, 100, 200, 400]):
+    """
+    Manually tests different k values using Cross-Validation and returns the best one.
+    Replaces Optuna.
+    """
+    print(f"\n--- Starting Manual Grid Search for K ---")
+    print(f"Values to test: {k_values}")
+    
+    results = []
+    
+    for k in k_values:
+        print(f"\nTesting codebook size k={k}...")
+        
+        # 1. Create temporary BoVW
         trial_bovw = BOVW(detector_type=detector_type, codebook_size=k)
+        
+        # 2. Fit Codebook (K-Means)
+        # This is the heavy part
         trial_bovw._update_fit_codebook(descriptors=all_descriptors)
         
-        # create the histograms
-        x_histograms = extract_bovw_histograms(trial_bovw, all_descriptors)
+        # 3. Create Histograms
+        X_histograms = extract_bovw_histograms(trial_bovw, all_descriptors)
         
-        #cross-validate classifier
-        clf = LogisticRegression(class_weight="balanced", solver="lbfgs")
-        scores = cross_val_score(clf, x_histograms, all_labels, cv=5, scoring='accuracy')
-        return scores.mean()
-    
-    #surpress optuna big logs
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
+        # 4. Cross-Validate Classifier
+        # n_jobs=None prevents Windows crash
+        clf = LogisticRegression(class_weight="balanced", solver='lbfgs', n_jobs=None, max_iter=2000)
         
-    study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=n_trials)
-    
-    #log everything to keep the results
-    results_df = study.trials_dataframe()
-    
-    # Save to CSV (e.g., "tuning_k_AKAZE.csv")
-    csv_filename = f"experiment_log_k_{detector_type}.csv"
-    results_df.to_csv(csv_filename, index=False)
-    print(f"Logged all {n_trials} trials to {csv_filename}")
-    
-    print(f"Best K found: {study.best_params['k']} with accuracy: {study.best_value:.4f}")
+        # 5-Fold CV
+        scores = cross_val_score(clf, X_histograms, all_labels, cv=5, scoring='accuracy')
+        mean_acc = scores.mean()
+        std_acc = scores.std()
+        
+        print(f" -> Accuracy: {mean_acc:.4f} (+/- {std_acc:.4f})")
+        
+        results.append({
+            "k": k,
+            "mean_acc": mean_acc,
+            "std_acc": std_acc
+        })
+
+    # Find best k
+    best_result = max(results, key=lambda x: x['mean_acc'])
+    print("\n-------------------------------------------------------")
+    print(f"Best K found: {best_result['k']} with accuracy: {best_result['mean_acc']:.4f}")
     print("-------------------------------------------------------")
     
-    return study.best_params['k']
+    # Save log to CSV (Manual logging)
+    df = pd.DataFrame(results)
+    csv_filename = f"manual_grid_search_k_{detector_type}.csv"
+    df.to_csv(csv_filename, index=False)
+    print(f"Results saved to {csv_filename}")
+    
+    return best_result['k']
 
 def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=None):
 
     classifiers = {
         "log_reg": LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=1000),
-        "svm_linear": SVC(kernel="linear", class_weight="balanced"),
-        "svm_rbf": SVC(kernel="rbf", class_weight="balanced"),
+        "svm_linear": LinearSVC(class_weight="balanced", dual="auto", max_iter=2000),        
+        "svm_rbf": SVC(kernel="rbf", class_weight="balanced", cache_size=1000, max_iter=5000),
         "knn": KNeighborsClassifier(n_neighbors=5),
         "rf": RandomForestClassifier(n_estimators=100)
     }
@@ -160,7 +218,7 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
     for name, clf in classifiers.items():
 
         print(f"\nEvaluating classifier: {name}")
-        scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy")
+        scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy", n_jobs=None)
         mean_acc = scores.mean()
         std_acc = scores.std()
         print(f"  CV accuracy: {mean_acc:.4f} ± {std_acc:.4f}")
@@ -284,13 +342,13 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
 
     # --- OPTIONAL: OPTIMIZE CODEBOOK SIZE (k) WITH OPTUNA ---
     if use_optimize:
+        k_grid = [64, 128, 256, 512, 1024]
         best_k = optimize_codebook_size(
             all_descriptors,
             all_labels,
             detector_type=det_type,
-            n_trials=10
+            k_values=k_grid
         )
-
         # Update the main BOVW object with best k
         bovw.codebook_size = best_k
         bovw.codebook_algo = MiniBatchKMeans(
@@ -344,9 +402,7 @@ def train(dataset: List[Tuple[Type[Image.Image], int]],
                                        max_iter=2000)
 
     elif best_clf_name == "svm_linear":
-        final_clf = SVC(kernel="linear",
-                        class_weight="balanced",
-                        probability=True)
+        final_clf = LinearSVC(class_weight="balanced", dual="auto", max_iter=2000)
 
     elif best_clf_name == "svm_rbf":
         final_clf = SVC(kernel="rbf",
@@ -643,10 +699,10 @@ if __name__ == "__main__":
     data_test = Dataset(ImageFolder="../places_reduced/val")
     print("Test dataset loaded with", len(data_test), "images.")
 
-    # print("Results for SIFT detector:")
-    # bovw = BOVW(detector_type='SIFT')
-    # bovw, classifier = train(dataset=data_train, bovw=bovw, use_optimize=True)
-    # test(dataset=data_test, bovw=bovw, classifier=classifier)
+    print("Results for SIFT detector:")
+    bovw = BOVW(detector_type='SIFT')
+    bovw, classifier, _ = train(dataset=data_train, bovw=bovw, use_optimize=True)
+    test(dataset=data_test, bovw=bovw, classifier=classifier)
     
     # run_dense_experiments(dataset_train=data_train, dataset_test=data_test)
     # run_pca_experiments(data_train, data_test)
