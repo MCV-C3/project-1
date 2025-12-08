@@ -24,6 +24,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from datetime import datetime
 from sklearn.preprocessing import Normalizer, StandardScaler
+from sklearn.mixture import GaussianMixture
 
 from sklearn.preprocessing import Normalizer, StandardScaler, MinMaxScaler
 
@@ -332,18 +333,19 @@ def train(dataset, bovw: Type[BOVW], use_optimize: bool = True, classifier_type:
     # Cross Validate to get the validation score
     cv_scores = cross_val_score(final_clf, bovw_histograms, all_labels, cv=5, scoring="accuracy", n_jobs=None)
     best_cv_score = cv_scores.mean()
+    cv_std = cv_scores.std()
     print(f"CV Accuracy: {best_cv_score:.4f} (+/- {cv_scores.std():.4f})")
     
     # 7. Final Fit
     final_clf.fit(bovw_histograms, all_labels)
     
-    # --- NEW: Predict on the Training Data to check for Overfitting ---
+   # --- NEW: Predict on the Training Data to check for Overfitting ---
     y_train_pred = final_clf.predict(bovw_histograms)
     train_score = accuracy_score(all_labels, y_train_pred)
     print(f"Train Accuracy: {train_score:.4f} (High vs Low CV = Overfitting)")
     
     # Return 4 values now
-    return bovw, final_clf, best_cv_score, train_score
+    return bovw, final_clf, best_cv_score, train_score, cv_std
 
 def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.Image], int]]:
     map_classes = {clsi: idx for idx, clsi  in enumerate(os.listdir(ImageFolder))}
@@ -370,22 +372,26 @@ def run_final_pipeline(data_train, data_test):
     def log_experiment(exp_name, param_name, param_value, bovw_obj, clf_name=BASELINE_CLF):
         print(f"\n[Experiment: {exp_name}] Testing {param_name} = {param_value}...")
         try:
-            # use_optimize=False ensures we respect the specific params set in bovw_obj
-            trained_bovw, trained_clf, cv_score = train(
+            # --- UPDATED UNPACKING: Now accepts 4 values ---
+            trained_bovw, trained_clf, cv_score, train_score , cv_std = train(
                 data_train, 
                 bovw_obj, 
                 use_optimize=False, 
                 classifier_type=clf_name
             )
             
+            # Test on unseen data
             test_score = test(data_test, trained_bovw, trained_clf)
             
+            # Log all three metrics
             results.append({
                 "Experiment": exp_name, 
                 "Parameter": param_name, 
                 "Value": str(param_value), 
                 "Classifier": clf_name,
+                "Train_Accuracy": train_score, 
                 "CV_Accuracy": cv_score,
+                "CV_Std": cv_std,    
                 "Test_Accuracy": test_score
             })
             
@@ -420,7 +426,7 @@ def run_final_pipeline(data_train, data_test):
         log_experiment("Codebook Size", "k", k, bovw)
 
     # EXP 5. DENSE SIFT STEPS
-    for step in [30, 20, 15]:
+    for step in [40, 30, 20, 15, 10]:
         bovw = BOVW(detector_type="DENSE_SIFT", codebook_size=128, detector_kwargs={'step_size': step, 'scales': [8]})
         log_experiment("Dense SIFT Step", "Step Size", step, bovw)
 
