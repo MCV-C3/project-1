@@ -209,7 +209,8 @@ def test(dataset, bovw, classifier):
     y_pred = classifier.predict(bovw_histograms)
     acc = accuracy_score(y_true=descriptors_labels, y_pred=y_pred)
     print(f"Test Accuracy: {acc:.4f}")
-    return acc
+    return acc, (y_pred, descriptors_labels)
+
 
 def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=None):
 
@@ -346,6 +347,23 @@ def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.I
             dataset.append((img_pil, map_classes[cls_folder]))
     return dataset
 
+BASELINE_CLF = "svm_linear" 
+
+def run_BOVW_experiment(bovw_obj,data_train,data_test, clf_name=BASELINE_CLF):
+        trained_bovw, trained_clf, cv_score, train_score , cv_std = train(
+            data_train, 
+            bovw_obj, 
+            use_optimize=False, 
+            classifier_type=clf_name
+        )
+        
+        # Test on unseen data
+        return  test(data_test, trained_bovw, trained_clf)
+
+            
+            
+
+
 def run_final_pipeline(data_train, data_test):
     print("\n" + "="*50)
     print("STARTING FINAL TESTING PIPELINE")
@@ -368,7 +386,7 @@ def run_final_pipeline(data_train, data_test):
             )
             
             # Test on unseen data
-            test_score = test(data_test, trained_bovw, trained_clf)
+            test_score, _  = test(data_test, trained_bovw, trained_clf)
             
             # Log all three metrics
             results.append({
