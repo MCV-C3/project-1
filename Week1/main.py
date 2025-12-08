@@ -74,7 +74,6 @@ def pyramid_extract_bovw_histograms(bovw: Type[BOVW], all_descriptors, all_keypo
                 level_cells[cell_index][img_idx].append(desc)
 
         for cell_descriptors_per_image in level_cells:
-            # Handle empty cells
             formatted_descs = [np.array(d) if len(d)>0 else np.zeros((0, 128)) for d in cell_descriptors_per_image]
             cell_hist = extract_bovw_histograms(descriptors=formatted_descs, bovw=bovw)
             pyramid_histograms.append(cell_hist)
@@ -84,7 +83,6 @@ def pyramid_extract_bovw_histograms(bovw: Type[BOVW], all_descriptors, all_keypo
 
 
 def get_descriptors(dataset, bovw, cache_dir="cache"):
-    # 1. Handling Dense SIFT (Always Recalculate)
     if bovw.detector_type == 'DENSE_SIFT':
         print(f"Detector is DENSE_SIFT. Skipping cache to ensure correct parameters...")
         all_descriptors, all_keypoints, img_dimensions, all_labels = [], [], [], []
@@ -215,14 +213,12 @@ def test(dataset, bovw, classifier):
 
 def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=None):
 
-    # 1. Classifiers that NEED tuning (Linear models)
     # We will search for the best 'C' parameter for these
     tunable_classifiers = {
         "log_reg": LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000, n_jobs=None),
         "svm_linear": LinearSVC(class_weight="balanced", dual="auto", max_iter=2000) 
     }
     
-    # 2. Classifiers that are usually fine with defaults (or too slow to tune in a loop)
     fixed_classifiers = {
         "knn": KNeighborsClassifier(n_neighbors=5, n_jobs=None),
         "rf": RandomForestClassifier(n_estimators=100, n_jobs=None),
@@ -232,17 +228,14 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
 
     results = {}
     
-    # --- A. Tuning Loop (Recovers your lost accuracy) ---
-    # Small grid to keep it fast but effective
+    # Tuning Loop 
     param_grid = {'C': [0.001, 0.01, 0.1, 1, 10]} 
     
     for name, clf in tunable_classifiers.items():
         print(f"\nTuning & Evaluating: {name}...")
         
-        # GridSearchCV automatically finds the best C using 3-fold CV
         gs = GridSearchCV(clf, param_grid, cv=3, scoring='accuracy', n_jobs=None)
         
-        # nested cross_val_score evaluates the "process of finding the best C"
         scores = cross_val_score(gs, X, y, cv=cv, scoring="accuracy", n_jobs=None)
         
         mean_acc = scores.mean()
@@ -250,7 +243,6 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
         print(f"  CV accuracy: {mean_acc:.4f} ± {std_acc:.4f}")
         results[name] = (mean_acc, std_acc)
 
-    # --- B. Fixed Loop ---
     for name, clf in fixed_classifiers.items():
         print(f"\nEvaluating: {name}...")
         scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy", n_jobs=None)
@@ -268,9 +260,7 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
     print(f"Best classifier: {best_name} with {best_mean:.4f}")
     print("-" * 30)
 
-    # --- Logging ---
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # Ensure values are not None for CSV
     d_type = detector_type if detector_type else "Unknown"
     c_size = codebook_size if codebook_size else 0
     
@@ -295,7 +285,7 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
 
     return best_name, results
 
-# --- MAIN TRAIN FUNCTION ---
+#  MAIN TRAIN FUNCTION 
 def train(dataset, bovw: Type[BOVW], use_optimize: bool = True, classifier_type: str = "svm_linear"):
     
     # 1. Feature Extraction
@@ -339,12 +329,10 @@ def train(dataset, bovw: Type[BOVW], use_optimize: bool = True, classifier_type:
     # 7. Final Fit
     final_clf.fit(bovw_histograms, all_labels)
     
-   # --- NEW: Predict on the Training Data to check for Overfitting ---
     y_train_pred = final_clf.predict(bovw_histograms)
     train_score = accuracy_score(all_labels, y_train_pred)
     print(f"Train Accuracy: {train_score:.4f} (High vs Low CV = Overfitting)")
     
-    # Return 4 values now
     return bovw, final_clf, best_cv_score, train_score, cv_std
 
 def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.Image], int]]:
@@ -372,7 +360,6 @@ def run_final_pipeline(data_train, data_test):
     def log_experiment(exp_name, param_name, param_value, bovw_obj, clf_name=BASELINE_CLF):
         print(f"\n[Experiment: {exp_name}] Testing {param_name} = {param_value}...")
         try:
-            # --- UPDATED UNPACKING: Now accepts 4 values ---
             trained_bovw, trained_clf, cv_score, train_score , cv_std = train(
                 data_train, 
                 bovw_obj, 
@@ -411,11 +398,10 @@ def run_final_pipeline(data_train, data_test):
         bovw = BOVW(detector_type=det, codebook_size=128)
         log_experiment("Detectors", "Detector", det, bovw)
 
-    # EXP 3. NUMBER OF FEATURES (The Missing Piece)
-    # Varies the quantity of keypoints detected (e.g., 500 vs 2000)
+    # EXP 3. NUMBER OF FEATURES
+    # Varies the quantity of keypoints detected 
     feature_counts = [50, 100, 250, 500, 1000]
     for n in feature_counts:
-        # Pass 'nfeatures' via detector_kwargs to control quantity
         bovw = BOVW(detector_type="SIFT", codebook_size=128, 
                     detector_kwargs={'nfeatures': n})
         log_experiment("Feature Count", "nfeatures", n, bovw)
