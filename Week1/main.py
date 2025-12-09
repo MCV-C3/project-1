@@ -447,8 +447,8 @@ def run_final_pipeline(data_train, data_test):
         log_experiment("PCA", "Dimensions", val, bovw)
 
     # EXP 8. SPATIAL PYRAMIDS
-    for lvl in [1, 2, 3]:
-        bovw = BOVW(detector_type="SIFT", codebook_size=128, pyramid_levels=lvl)
+    for lvl in [1, 2, 3, 4, 5]:
+        bovw = BOVW(detector_type="DENSE_SIFT", codebook_size=128, pyramid_levels=lvl)
         log_experiment("Spatial Pyramid", "Levels", lvl, bovw)
 
     # EXP 9. SCALING

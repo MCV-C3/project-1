@@ -16,5 +16,5 @@ conda activate C3_Team1
 ```
 **Install Packages:**
 ```bash
-pip install numpy opencv-python scikit-learn pillow matplotlib tqdm optuna pandas
+pip install numpy opencv-python scikit-learn pillow matplotlib tqdm optuna pandas seaborn
 ```
