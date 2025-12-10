@@ -7,21 +7,23 @@ saved GMM models (joblib)
 import os
 import numpy as np
 from tqdm import tqdm
-from joblib import dump, load
 import pandas as pd
-
+from joblib import Parallel, delayed, dump, load
+from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import cross_val_score, train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, Normalizer
 from sklearn.metrics import accuracy_score
+from sklearn.svm import SVC,LinearSVC
+
 
 from bovw import BOVW
 from main import Dataset
 
 
 # Utility functions
-def gather_all_descriptors(dataset, bovw: BOVW, max_descriptors=200000, per_image_limit=None):
+def gather_all_descriptors(dataset, bovw: BOVW, max_descriptors=200000, per_image_limit=None,pca_value = None):
     """
     Extract descriptors for all images in dataset using bovw._extract_features.
     Returns:
@@ -61,6 +63,7 @@ def gather_all_descriptors(dataset, bovw: BOVW, max_descriptors=200000, per_imag
     else:
         all_desc_sample = all_desc
 
+
     return descriptors_list, labels, all_desc_sample
 
 
@@ -70,11 +73,13 @@ def fit_gmm(descriptors, n_components=64, cov_type='diag', random_state=42, save
     descriptors: n x d array (sampled)
     Returns fitted gmm.
     """
+    print("y")
     print(f"Fitting GMM with K={n_components}, cov_type={cov_type} on {descriptors.shape[0]} descriptors...")
     gmm = GaussianMixture(n_components=n_components,
                           covariance_type=cov_type,
-                          max_iter=200,
+                          max_iter=300,
                           verbose=1,
+                          reg_covar=1e-3,
                           random_state=random_state)
     gmm.fit(descriptors)
     if save_path:
@@ -160,12 +165,12 @@ def compute_fvs_for_dataset(descriptors_list, gmm):
     descriptors_list: list of arrays (per image)
     Returns X (n_images x fv_dim)
     """
-    X = []
-    for desc in tqdm(descriptors_list, desc="Computing Fisher Vectors"):
-        fv = fisher_vector(desc, gmm)
-        X.append(fv)
-    X = np.vstack(X)
-    return X
+    X = Parallel(n_jobs=-1)(
+        delayed(fisher_vector)(desc, gmm) 
+        for desc in tqdm(descriptors_list, desc="Computing Fisher Vectors (Parallel)")
+    )
+    
+    return np.vstack(X)
 
 
 
@@ -276,6 +281,214 @@ def run_fv_experiments(train_folder="../places_reduced/train",
     print("\nAll experiments complete. Final results:")
     print(pd.DataFrame(results_records))
     return results_records
+
+
+def final_mod1(train_dataset,test_dataset):
+
+    
+
+
+    # instantiate a BOVW object only for descriptor extraction without kmeans
+    bovw_for_desc = BOVW(detector_type="DENSE_SIFT", codebook_size=128, method="l2",detector_kwargs={'step_size': 15, 'scales': [4, 8, 12, 16]})
+
+    print("Gathering descriptors from training set (this may take a while)...")
+    descriptors_list_train, labels_train, sample_desc = gather_all_descriptors(
+        train_dataset, bovw_for_desc,
+        max_descriptors=200000,
+        per_image_limit=500,
+        pca_value=None
+    )
+    print("Total train images with descriptors:", len(descriptors_list_train))
+    print("Sample descriptors shape (for GMM):", sample_desc.shape)
+
+
+
+    # Fitting GMMs for each gaussian count and evaluate
+
+    print(sample_desc.shape)
+    gmm = fit_gmm(sample_desc, n_components=128, cov_type='diag', random_state=42,
+                   )
+
+
+    X_train = compute_fvs_for_dataset(descriptors_list_train, gmm)
+    y_train = np.array(labels_train)
+
+    # Also compute FVs for test set
+    print("Extracting descriptors for test set...")
+    descriptors_list_test = []
+    labels_test = []
+    for img, label in tqdm(test_dataset, desc="Extract descriptors test"):
+        _, desc = bovw_for_desc._extract_features(image=np.array(img))
+        if desc is None:
+            continue
+        
+        descriptors_list_test.append(desc)
+        labels_test.append(label)
+
+    X_test = compute_fvs_for_dataset(descriptors_list_test, gmm)
+    y_test = np.array(labels_test)
+
+
+    scaler = Normalizer(norm='l2')
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Train classifier (Logistic Regression) and evaluate with CV and test
+  
+    clf = LinearSVC(class_weight="balanced", dual=False, max_iter=5000)
+    print("Cross-validating on training FVs (5-fold)...")
+    print(X_train_scaled.shape)
+    cv_scores = cross_val_score(clf, X_train_scaled, y_train, cv=5, scoring='accuracy',n_jobs=-1)
+    mean_cv = cv_scores.mean()
+    std_cv = cv_scores.std()
+    print(f"CV accuracy: {mean_cv:.4f} ± {std_cv:.4f}")
+
+    # Fit on all training and evaluate on test set
+    clf.fit(X_train_scaled, y_train)
+    print("Fitted")
+    y_pred = clf.predict(X_test_scaled)
+    print("Predicted")
+    test_acc = accuracy_score(y_test, y_pred)
+
+    return test_acc, (y_pred,y_test)
+
+
+def final_mod2(train_dataset,test_dataset):
+
+    
+
+
+    # instantiate a BOVW object only for descriptor extraction without kmeans
+    bovw_for_desc = BOVW(detector_type="DENSE_SIFT", codebook_size=128, method="l2",detector_kwargs={'step_size': 15, 'scales': [4, 8, 12, 16]})
+
+    print("Gathering descriptors from training set (this may take a while)...")
+    descriptors_list_train, labels_train, sample_desc = gather_all_descriptors(
+        train_dataset, bovw_for_desc,
+        max_descriptors=200000,
+        per_image_limit=500,
+        pca_value=None
+    )
+    print("Total train images with descriptors:", len(descriptors_list_train))
+    print("Sample descriptors shape (for GMM):", sample_desc.shape)
+
+
+
+    # Fitting GMMs for each gaussian count and evaluate
+
+    print(sample_desc.shape)
+    gmm = fit_gmm(sample_desc, n_components=128, cov_type='diag', random_state=42,
+                   )
+
+
+    X_train = compute_fvs_for_dataset(descriptors_list_train, gmm)
+    y_train = np.array(labels_train)
+
+    # Also compute FVs for test set
+    print("Extracting descriptors for test set...")
+    descriptors_list_test = []
+    labels_test = []
+    for img, label in tqdm(test_dataset, desc="Extract descriptors test"):
+        _, desc = bovw_for_desc._extract_features(image=np.array(img))
+        if desc is None:
+            continue
+        
+        descriptors_list_test.append(desc)
+        labels_test.append(label)
+
+    X_test = compute_fvs_for_dataset(descriptors_list_test, gmm)
+    y_test = np.array(labels_test)
+
+
+    scaler = Normalizer(norm='l2')
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Train classifier (Logistic Regression) and evaluate with CV and test
+    clf = SVC(kernel="rbf", class_weight="balanced", probability=True)
+    print("Cross-validating on training FVs (5-fold)...")
+    print(X_train_scaled.shape)
+    cv_scores = cross_val_score(clf, X_train_scaled, y_train, cv=5, scoring='accuracy',n_jobs=-1)
+    mean_cv = cv_scores.mean()
+    std_cv = cv_scores.std()
+    print(f"CV accuracy: {mean_cv:.4f} ± {std_cv:.4f}")
+
+    # Fit on all training and evaluate on test set
+    clf.fit(X_train_scaled, y_train)
+    print("Fitted")
+    y_pred = clf.predict(X_test_scaled)
+    print("Predicted")
+    test_acc = accuracy_score(y_test, y_pred)
+
+    return test_acc, (y_pred,y_test)
+
+
+def final_mod3(train_dataset,test_dataset):
+
+    
+
+
+    # instantiate a BOVW object only for descriptor extraction without kmeans
+    bovw_for_desc = BOVW(detector_type="DENSE_SIFT", codebook_size=128, method="l2",detector_kwargs={'step_size': 15, 'scales': [4, 8, 12, 16]})
+
+    print("Gathering descriptors from training set (this may take a while)...")
+    descriptors_list_train, labels_train, sample_desc = gather_all_descriptors(
+        train_dataset, bovw_for_desc,
+        max_descriptors=200000,
+        per_image_limit=500,
+        pca_value=None
+    )
+    print("Total train images with descriptors:", len(descriptors_list_train))
+    print("Sample descriptors shape (for GMM):", sample_desc.shape)
+
+
+
+    # Fitting GMMs for each gaussian count and evaluate
+
+    print(sample_desc.shape)
+    gmm = fit_gmm(sample_desc, n_components=128, cov_type='diag', random_state=42,
+                   )
+
+
+    X_train = compute_fvs_for_dataset(descriptors_list_train, gmm)
+    y_train = np.array(labels_train)
+
+    # Also compute FVs for test set
+    print("Extracting descriptors for test set...")
+    descriptors_list_test = []
+    labels_test = []
+    for img, label in tqdm(test_dataset, desc="Extract descriptors test"):
+        _, desc = bovw_for_desc._extract_features(image=np.array(img))
+        if desc is None:
+            continue
+        
+        descriptors_list_test.append(desc)
+        labels_test.append(label)
+
+    X_test = compute_fvs_for_dataset(descriptors_list_test, gmm)
+    y_test = np.array(labels_test)
+
+
+    scaler = Normalizer(norm='l2')
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+
+    # Train classifier (Logistic Regression) and evaluate with CV and test
+    clf = LogisticRegression(solver='lbfgs', class_weight='balanced', max_iter=5000, n_jobs=-1)
+    print("Cross-validating on training FVs (5-fold)...")
+    print(X_train_scaled.shape)
+    cv_scores = cross_val_score(clf, X_train_scaled, y_train, cv=5, scoring='accuracy',n_jobs=-1)
+    mean_cv = cv_scores.mean()
+    std_cv = cv_scores.std()
+    print(f"CV accuracy: {mean_cv:.4f} ± {std_cv:.4f}")
+
+    # Fit on all training and evaluate on test set
+    clf.fit(X_train_scaled, y_train)
+    print("Fitted")
+    y_pred = clf.predict(X_test_scaled)
+    print("Predicted")
+    test_acc = accuracy_score(y_test, y_pred)
+
+    return test_acc, (y_pred,y_test)
 
 
 if __name__ == "__main__":

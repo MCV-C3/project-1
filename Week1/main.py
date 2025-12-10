@@ -149,7 +149,7 @@ def get_classifier(name="svm_linear"):
     """
     if name == "log_reg": 
         # Increase max_iter to ensure convergence
-        return LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000, n_jobs=None)
+        return LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000, n_jobs=-1)
     elif name == "svm_linear": 
         # LinearSVC is fast and robust
         return LinearSVC(class_weight="balanced", dual="auto", max_iter=2000)
@@ -157,9 +157,9 @@ def get_classifier(name="svm_linear"):
         # RBF SVM
         return SVC(kernel="rbf", class_weight="balanced", cache_size=1000)
     elif name == "knn": 
-        return KNeighborsClassifier(n_neighbors=5, n_jobs=None)
+        return KNeighborsClassifier(n_neighbors=5, n_jobs=-1)
     elif name == "rf": 
-        return RandomForestClassifier(n_estimators=100, n_jobs=None)
+        return RandomForestClassifier(n_estimators=100, n_jobs=-1)
     else:
         raise ValueError(f"Unknown classifier: {name}")
     
@@ -173,7 +173,7 @@ def manual_grid_search_codebook_size(all_descriptors, all_labels, detector_type=
         trial_bovw = BOVW(detector_type=detector_type, codebook_size=k)
         trial_bovw._update_fit_codebook(descriptors=all_descriptors)
         X_hist = extract_bovw_histograms(trial_bovw, all_descriptors)
-        scores = cross_val_score(clf, X_hist, all_labels, cv=3, scoring='accuracy', n_jobs=None)
+        scores = cross_val_score(clf, X_hist, all_labels, cv=3, scoring='accuracy', n_jobs=-1)
         
         results.append({"k": k, "mean_acc": scores.mean()})
 
@@ -216,13 +216,13 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
 
     # We will search for the best 'C' parameter for these
     tunable_classifiers = {
-        "log_reg": LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000, n_jobs=None),
+        "log_reg": LogisticRegression(class_weight="balanced", solver="lbfgs", max_iter=2000, n_jobs=-1),
         "svm_linear": LinearSVC(class_weight="balanced", dual="auto", max_iter=2000) 
     }
     
     fixed_classifiers = {
-        "knn": KNeighborsClassifier(n_neighbors=5, n_jobs=None),
-        "rf": RandomForestClassifier(n_estimators=100, n_jobs=None),
+        "knn": KNeighborsClassifier(n_neighbors=5, n_jobs=-1),
+        "rf": RandomForestClassifier(n_estimators=100, n_jobs=-1),
         # RBF SVM is slow, so we use fixed params or a very small cache
         "svm_rbf": SVC(kernel="rbf", class_weight="balanced", cache_size=1000) 
     }
@@ -235,9 +235,9 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
     for name, clf in tunable_classifiers.items():
         print(f"\nTuning & Evaluating: {name}...")
         
-        gs = GridSearchCV(clf, param_grid, cv=3, scoring='accuracy', n_jobs=None)
+        gs = GridSearchCV(clf, param_grid, cv=3, scoring='accuracy', n_jobs=-1)
         
-        scores = cross_val_score(gs, X, y, cv=cv, scoring="accuracy", n_jobs=None)
+        scores = cross_val_score(gs, X, y, cv=cv, scoring="accuracy", n_jobs=-1)
         
         mean_acc = scores.mean()
         std_acc = scores.std()
@@ -246,7 +246,7 @@ def evaluate_multiple_classifiers(X, y, cv=5, detector_type=None, codebook_size=
 
     for name, clf in fixed_classifiers.items():
         print(f"\nEvaluating: {name}...")
-        scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy", n_jobs=None)
+        scores = cross_val_score(clf, X, y, cv=cv, scoring="accuracy", n_jobs=-1)
         
         mean_acc = scores.mean()
         std_acc = scores.std()
@@ -322,7 +322,7 @@ def train(dataset, bovw: Type[BOVW], use_optimize: bool = True, classifier_type:
     final_clf = get_classifier(classifier_type)
     
     # Cross Validate to get the validation score
-    cv_scores = cross_val_score(final_clf, bovw_histograms, all_labels, cv=5, scoring="accuracy", n_jobs=None)
+    cv_scores = cross_val_score(final_clf, bovw_histograms, all_labels, cv=5, scoring="accuracy", n_jobs=-1)
     best_cv_score = cv_scores.mean()
     cv_std = cv_scores.std()
     print(f"CV Accuracy: {best_cv_score:.4f} (+/- {cv_scores.std():.4f})")
@@ -338,8 +338,10 @@ def train(dataset, bovw: Type[BOVW], use_optimize: bool = True, classifier_type:
 
 def Dataset(ImageFolder:str = "data/MIT_split/train") -> List[Tuple[Type[Image.Image], int]]:
     map_classes = {clsi: idx for idx, clsi  in enumerate(os.listdir(ImageFolder))}
+    print(map_classes)
     dataset = []
     for idx, cls_folder in enumerate(os.listdir(ImageFolder)):
+        
         image_path = os.path.join(ImageFolder, cls_folder)
         images = glob.glob(image_path+"/*.jpg")
         for img in images:
