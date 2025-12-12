@@ -24,6 +24,9 @@ def train(model, dataloader, criterion, optimizer, device):
         outputs = model(inputs)
         loss = criterion(outputs, labels)
 
+        # Retrieve Layer
+        #layer_2 = model.recover_layer(inputs,2)
+
         # Backward pass and optimization
         optimizer.zero_grad()
         loss.backward()
@@ -124,8 +127,8 @@ if __name__ == "__main__":
                                     F.Resize(size=(224, 224)),
                                 ])
     
-    data_train = ImageFolder("~/data/Master/MIT_split/train", transform=transformation)
-    data_test = ImageFolder("~/data/Master/MIT_split/test", transform=transformation) 
+    data_train = ImageFolder("/ghome/group01/mcv/datasets/C3/2425/MIT_split/train", transform=transformation)
+    data_test = ImageFolder("/ghome/group01/mcv/datasets/C3/2425/MIT_split/test", transform=transformation) 
 
     train_loader = DataLoader(data_train, batch_size=256, pin_memory=True, shuffle=True, num_workers=8)
     test_loader = DataLoader(data_test, batch_size=128, pin_memory=True, shuffle=False, num_workers=8)
@@ -135,7 +138,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-    model = SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
+    model = SimpleModel(input_d=C*H*W,hidden_layers_n=2, hidden_d=300, output_d=8)
     plot_computational_graph(model, input_size=(1, C*H*W))  # Batch size of 1, input_dim=10
 
     model = model.to(device)
