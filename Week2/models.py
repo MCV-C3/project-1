@@ -40,15 +40,13 @@ class SimpleModel(nn.Module):
         return x
 
 
-    def recover_layer(self,x,layer_int):
-
-        if layer_int == self.hidden_layers_n+1:
-            return forward(x)
-
-        else:
-            x = x.view(x.shape[0], -1)
-
-        for layer in  self.layers[:layer_int]:
+    def recover_layer(self, x, layer_int):
+        x = x.view(x.shape[0], -1)
+        for i, layer in enumerate(self.layers):
             x = layer(x)
-            x = self.activation(x)
+            if i < len(self.layers) - 1:
+                x = self.activation(x)
+            if i == layer_int:
+                return x
         return x
+

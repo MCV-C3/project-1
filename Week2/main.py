@@ -116,6 +116,21 @@ def plot_computational_graph(model: torch.nn.Module, input_size: tuple, filename
 
     print(f"Computational graph saved as {filename}")
 
+def extract_features(model, dataloader, device, layer_id):
+    model.eval()
+    feats, labels_list = [], []
+
+    with torch.no_grad():
+        for imgs, labels in dataloader:
+            imgs = imgs.to(device)
+            f = model.recover_layer(imgs, layer_id)
+            feats.append(f.cpu().numpy())
+            labels_list.append(labels.numpy())
+
+    feats = np.vstack(feats)
+    labels = np.hstack(labels_list)
+    return feats, labels
+
 
 if __name__ == "__main__":
 
@@ -127,8 +142,8 @@ if __name__ == "__main__":
                                     F.Resize(size=(224, 224)),
                                 ])
     
-    data_train = ImageFolder("/ghome/group01/mcv/datasets/C3/2425/MIT_split/train", transform=transformation)
-    data_test = ImageFolder("/ghome/group01/mcv/datasets/C3/2425/MIT_split/test", transform=transformation) 
+    data_train = ImageFolder("/ghome/group01/mcv/datasets/C3/2526/places_reduced/train", transform=transformation)
+    data_test = ImageFolder("/ghome/group01/mcv/datasets/C3/2526/places_reduced/val", transform=transformation) 
 
     train_loader = DataLoader(data_train, batch_size=256, pin_memory=True, shuffle=True, num_workers=8)
     test_loader = DataLoader(data_test, batch_size=128, pin_memory=True, shuffle=False, num_workers=8)
@@ -138,7 +153,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-    model = SimpleModel(input_d=C*H*W,hidden_layers_n=2, hidden_d=300, output_d=8)
+    model = SimpleModel(input_d=C*H*W,hidden_layers_n=2, hidden_d=300, output_d=11)
     plot_computational_graph(model, input_size=(1, C*H*W))  # Batch size of 1, input_dim=10
 
     model = model.to(device)
@@ -165,3 +180,17 @@ if __name__ == "__main__":
     # Plot results
     plot_metrics({"loss": train_losses, "accuracy": train_accuracies}, {"loss": test_losses, "accuracy": test_accuracies}, "loss")
     plot_metrics({"loss": train_losses, "accuracy": train_accuracies}, {"loss": test_losses, "accuracy": test_accuracies}, "accuracy")
+
+from sklearn.svm import LinearSVC
+
+# Choose which layer to use (0, 1, 2, ...)
+layer_id = 1
+
+train_feats, train_labels = extract_features(model, train_loader, device, layer_id)
+test_feats, test_labels = extract_features(model, test_loader, device, layer_id)
+
+svm = LinearSVC(C=1.0)
+svm.fit(train_feats, train_labels)
+svm_acc = svm.score(test_feats, test_labels)
+
+print(f"SVM accuracy using layer {layer_id}: {svm_acc:.4f}")
