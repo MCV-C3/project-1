@@ -11,6 +11,12 @@ import torchvision.transforms.v2  as F
 from torchviz import make_dot
 import tqdm
 
+import os
+
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
+
 # Train function
 def train(model, dataloader, criterion, optimizer, device):
     model.train()
@@ -42,6 +48,46 @@ def train(model, dataloader, criterion, optimizer, device):
     accuracy = correct / total
     return avg_loss, accuracy
 
+def train_with_patches(model, dataloader, criterion, optimizer, device, patch_size, stride=None):
+    model.train()
+    train_loss = 0.0
+    correct, total = 0, 0
+    
+    if stride is None:
+        stride = patch_size
+
+    for inputs, labels in dataloader:
+        inputs, labels = inputs.to(device), labels.to(device)
+        batch_size, channels, height, width = inputs.shape
+        
+        patches = []
+        for i in range(0, height - patch_size + 1, stride):
+            for j in range(0, width - patch_size + 1, stride):
+                patch = inputs[:, :, i:i+patch_size, j:j+patch_size]
+                patches.append(patch)
+        
+        patches = torch.stack(patches, dim=1)  
+        num_patches = patches.shape[1]
+        patches = patches.view(-1, channels, patch_size, patch_size) 
+        
+        labels_expanded = labels.unsqueeze(1).expand(-1, num_patches).reshape(-1)
+        
+        outputs = model(patches)
+        loss = criterion(outputs, labels_expanded)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        train_loss += loss.item() * batch_size  
+        _, predicted = outputs.max(1)
+        correct += (predicted == labels_expanded).sum().item()
+        total += labels_expanded.size(0)
+
+    avg_loss = train_loss / len(dataloader.dataset)
+    accuracy = correct / total
+    return avg_loss, accuracy
+
 
 def test(model, dataloader, criterion, device):
     model.eval()
@@ -59,6 +105,68 @@ def test(model, dataloader, criterion, device):
             # Track loss and accuracy
             test_loss += loss.item() * inputs.size(0)
             _, predicted = outputs.max(1)
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
+
+    avg_loss = test_loss / total
+    accuracy = correct / total
+    return avg_loss, accuracy
+
+def test_patches(model, dataloader, criterion, device, patch_size, stride=None, aggregation='mean'):
+    model.eval()
+    test_loss = 0.0
+    correct, total = 0, 0
+    
+    if stride is None:
+        stride = patch_size
+
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            batch_size, channels, height, width = inputs.shape
+            
+            # Extract patches from each image in the batch
+            patches = []
+            for i in range(0, height - patch_size + 1, stride):
+                for j in range(0, width - patch_size + 1, stride):
+                    patch = inputs[:, :, i:i+patch_size, j:j+patch_size]
+                    patches.append(patch)
+            
+            # Stack patches: (batch, num_patches, 3, patch_size, patch_size)
+            patches = torch.stack(patches, dim=1)
+            num_patches = patches.shape[1]
+            patches = patches.view(-1, channels, patch_size, patch_size)
+            
+            # Forward pass on all patches
+            outputs = model(patches)  # (batch * num_patches, num_classes)
+            
+            # Reshape outputs back to (batch, num_patches, num_classes)
+            num_classes = outputs.shape[1]
+            outputs = outputs.view(batch_size, num_patches, num_classes)
+            
+            # Aggregate predictions across patches for each image
+            if aggregation == 'mean':
+                # Average the logits/probabilities across patches
+                aggregated_outputs = outputs.mean(dim=1)  # (batch, num_classes)
+            elif aggregation == 'vote':
+                # Majority voting: each patch votes for a class
+                patch_predictions = outputs.argmax(dim=2)  # (batch, num_patches)
+                aggregated_outputs = torch.zeros(batch_size, num_classes, device=device)
+                for b in range(batch_size):
+                    for pred in patch_predictions[b]:
+                        aggregated_outputs[b, pred] += 1
+            elif aggregation == 'max':
+                # Max pooling: take maximum confidence across patches
+                aggregated_outputs = outputs.max(dim=1)[0]  # (batch, num_classes)
+            else:
+                raise ValueError(f"Unknown aggregation method: {aggregation}")
+            
+            # Calculate loss on aggregated outputs
+            loss = criterion(aggregated_outputs, labels)
+            
+            # Track loss and accuracy
+            test_loss += loss.item() * batch_size
+            _, predicted = aggregated_outputs.max(1)
             correct += (predicted == labels).sum().item()
             total += labels.size(0)
 
@@ -131,6 +239,43 @@ def extract_features(model, dataloader, device, layer_id):
     labels = np.hstack(labels_list)
     return feats, labels
 
+def extract_patch_features(model, dataloader, device, layer_id, patch_size, stride=None):
+    model.eval()
+    feats, labels_list = [], []
+    
+    if stride is None:
+        stride = patch_size
+
+    with torch.no_grad():
+        for imgs, labels in dataloader:
+            imgs = imgs.to(device)
+            batch_size, channels, height, width = imgs.shape
+            
+            # Extract patches from each image in the batch
+            patches = []
+            for i in range(0, height - patch_size + 1, stride):
+                for j in range(0, width - patch_size + 1, stride):
+                    patch = imgs[:, :, i:i+patch_size, j:j+patch_size]
+                    patches.append(patch)
+            
+            # Stack patches: (batch, num_patches, 3, patch_size, patch_size)
+            patches = torch.stack(patches, dim=1)
+            num_patches = patches.shape[1]
+            patches = patches.view(-1, channels, patch_size, patch_size)
+            
+            # Extract features from all patches
+            patch_features = model.recover_layer(patches, layer_id)  # (batch * num_patches, feature_dim)
+            
+            # Reshape to (batch, num_patches, feature_dim)
+            feature_dim = patch_features.shape[1]
+            patch_features = patch_features.view(batch_size, num_patches, feature_dim)
+            
+            feats.append(patch_features.cpu().numpy())
+            labels_list.append(labels.numpy())
+
+    feats = np.vstack(feats)  # (total_images, num_patches, feature_dim)
+    labels = np.hstack(labels_list)
+    return feats, labels
 
 if __name__ == "__main__":
 
@@ -142,8 +287,8 @@ if __name__ == "__main__":
                                     F.Resize(size=(224, 224)),
                                 ])
     
-    data_train = ImageFolder("/ghome/group01/mcv/datasets/C3/2526/places_reduced/train", transform=transformation)
-    data_test = ImageFolder("/ghome/group01/mcv/datasets/C3/2526/places_reduced/val", transform=transformation) 
+    data_train = ImageFolder("../places_reduced/train", transform=transformation)
+    data_test = ImageFolder("../places_reduced/val", transform=transformation) 
 
     train_loader = DataLoader(data_train, batch_size=256, pin_memory=True, shuffle=True, num_workers=8)
     test_loader = DataLoader(data_test, batch_size=128, pin_memory=True, shuffle=False, num_workers=8)
@@ -154,7 +299,7 @@ if __name__ == "__main__":
 
 
     model = SimpleModel(input_d=C*H*W,hidden_layers_n=2, hidden_d=300, output_d=11)
-    plot_computational_graph(model, input_size=(1, C*H*W))  # Batch size of 1, input_dim=10
+    # plot_computational_graph(model, input_size=(1, C*H*W))  # Batch size of 1, input_dim=10
 
     model = model.to(device)
     criterion = nn.CrossEntropyLoss()
@@ -181,16 +326,16 @@ if __name__ == "__main__":
     plot_metrics({"loss": train_losses, "accuracy": train_accuracies}, {"loss": test_losses, "accuracy": test_accuracies}, "loss")
     plot_metrics({"loss": train_losses, "accuracy": train_accuracies}, {"loss": test_losses, "accuracy": test_accuracies}, "accuracy")
 
-from sklearn.svm import LinearSVC
+    from sklearn.svm import LinearSVC
 
-# Choose which layer to use (0, 1, 2, ...)
-layer_id = 1
+    # Choose which layer to use (0, 1, 2, ...)
+    layer_id = 1
 
-train_feats, train_labels = extract_features(model, train_loader, device, layer_id)
-test_feats, test_labels = extract_features(model, test_loader, device, layer_id)
+    train_feats, train_labels = extract_features(model, train_loader, device, layer_id)
+    test_feats, test_labels = extract_features(model, test_loader, device, layer_id)
 
-svm = LinearSVC(C=1.0)
-svm.fit(train_feats, train_labels)
-svm_acc = svm.score(test_feats, test_labels)
+    svm = LinearSVC(C=1.0)
+    svm.fit(train_feats, train_labels)
+    svm_acc = svm.score(test_feats, test_labels)
 
-print(f"SVM accuracy using layer {layer_id}: {svm_acc:.4f}")
+    print(f"SVM accuracy using layer {layer_id}: {svm_acc:.4f}")
