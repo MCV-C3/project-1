@@ -326,41 +326,99 @@ optimal_layer_n = 1
 best_hidden_layers_n = 1
 hidden_layers_n = 1
 
-for hidden_dim in [32, 64, 128, 256, 512, 300]:
-    print(f"\n{'='*50}")
-    print(f"Testing hidden dimension: {hidden_dim}")
-    print(f"{'='*50}\n")
+# for hidden_dim in [32, 64, 128, 256, 512, 300]:
+#     print(f"\n{'='*50}")
+#     print(f"Testing hidden dimension: {hidden_dim}")
+#     print(f"{'='*50}\n")
     
-    C, H, W = np.array(data_train[0][0]).shape
-    input_size = C * H * W
+#     C, H, W = np.array(data_train[0][0]).shape
+#     input_size = C * H * W
 
-    model = SimpleModel(input_d=C*H*W, hidden_layers_n=best_hidden_layers_n, hidden_d=hidden_dim, output_d=11)
-    model_name = f"{input_size}_input_{hidden_layers_n}_layers_{hidden_dim}_dimension"
+#     model = SimpleModel(input_d=C*H*W, hidden_layers_n=best_hidden_layers_n, hidden_d=hidden_dim, output_d=11)
+#     model_name = f"{input_size}_input_{hidden_layers_n}_layers_{hidden_dim}_dimension"
     
-    dimension_search_results[hidden_dim] = train_simple_model(
-        model, model_name, train_loader, test_loader,
-        search_type=f"dimension_search_{hidden_dim}", param_value=hidden_dim,augmentation=augmentations
-    )
+#     dimension_search_results[hidden_dim] = train_simple_model(
+#         model, model_name, train_loader, test_loader,
+#         search_type=f"dimension_search_{hidden_dim}", param_value=hidden_dim,augmentation=augmentations
+#     )
     
-    if dimension_search_results[hidden_dim][0] < best_accuracy:
-        best_accuracy = dimension_search_results[hidden_dim][0]
-        best_hidden_dim = hidden_dim
-        wandb.log({
-            "dimension_search/best_hidden_dim": best_hidden_dim,
-            "dimension_search/best_overall_accuracy": best_accuracy,
-        })
+#     if dimension_search_results[hidden_dim][0] < best_accuracy:
+#         best_accuracy = dimension_search_results[hidden_dim][0]
+#         best_hidden_dim = hidden_dim
+#         wandb.log({
+#             "dimension_search/best_hidden_dim": best_hidden_dim,
+#             "dimension_search/best_overall_accuracy": best_accuracy,
+#         })
 
-with open('dimension_search_results.json', 'w') as f:
-    json.dump(dimension_search_results, f, indent=4)
+# with open('dimension_search_results.json', 'w') as f:
+#     json.dump(dimension_search_results, f, indent=4)
 
-wandb.log({"dimension_search/results": wandb.Table(
-    columns=["hidden_dim", "best_accuracy", "train_accuracy", "best_epoch"],
-    data=[[k, v[0], v[1], v[2]] for k, v in dimension_search_results.items()]
-)})
+# wandb.log({"dimension_search/results": wandb.Table(
+#     columns=["hidden_dim", "best_accuracy", "train_accuracy", "best_epoch"],
+#     data=[[k, v[0], v[1], v[2]] for k, v in dimension_search_results.items()]
+# )})
 
 # ==================== PATCH SEARCH ====================
 wandb.log({"search_phase": "patch_search"})
 patches_search_results = {}
+
+
+augmentations = aug.AugmentationSequential(
+        aug.RandomHorizontalFlip(p=0.5),
+        aug.RandomRotation(9),
+        aug.RandomVerticalFlip(p=0.05),
+        aug.RandomGrayscale(p=0.1),
+        aug.RandomResizedCrop(
+        size=(256, 256),       
+        scale=(0.8, 1),
+        ratio=(1, 1)),
+        aug.ColorJitter(
+        brightness=0.2,
+        contrast=0.2,
+        saturation=0.2,
+        hue=0.05),
+        aug.RandomGaussianBlur(kernel_size=5, sigma=(0.1, 0.6))
+        
+    )
+
+transformation = F.Compose([
+    F.ToImage(),
+    F.ToDtype(torch.float32, scale=True),
+    F.Resize(size=(256, 256)),
+])
+
+data_train = ImageFolder("../places_reduced/train", transform=transformation)
+data_test = ImageFolder("../places_reduced/val", transform=transformation)
+
+train_images = []
+train_labels = []
+for img, label in data_train:
+    train_images.append(img)
+    train_labels.append(label)
+
+train_images = torch.stack(train_images).to(device=device)
+train_labels = torch.tensor(train_labels, device=device)
+
+print("Loading test data to VRAM...")
+test_images = []
+test_labels = []
+for img, label in data_test:
+    test_images.append(img)
+    test_labels.append(label)
+
+test_images = torch.stack(test_images).to(device=device)
+test_labels = torch.tensor(test_labels, device=device)
+
+train_dataset_gpu = TensorDataset(train_images, train_labels)
+test_dataset_gpu = TensorDataset(test_images, test_labels)
+
+train_loader = DataLoader(train_dataset_gpu, batch_size=256, shuffle=True, num_workers=0)
+test_loader = DataLoader(test_dataset_gpu, batch_size=128, shuffle=False, num_workers=0)
+
+best_hidden_dim = 256
+
+hidden_dim = 256
+
 
 for patch_size in [4,8,16, 32, 64,]:
     print(f"\n{'='*50}")

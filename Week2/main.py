@@ -48,7 +48,7 @@ def train(model, dataloader, criterion, optimizer, device):
     accuracy = correct / total
     return avg_loss, accuracy
 
-def train_with_patches(model, dataloader, criterion, optimizer, device, patch_size, stride=None):
+def train_with_patches(model, dataloader, criterion, optimizer, device, patch_size, stride=None, aggregation='mean'):
     model.train()
     train_loss = 0.0
     correct, total = 0, 0
@@ -60,31 +60,46 @@ def train_with_patches(model, dataloader, criterion, optimizer, device, patch_si
         inputs, labels = inputs.to(device), labels.to(device)
         batch_size, channels, height, width = inputs.shape
         
+        # Extract patches from each image in the batch
         patches = []
         for i in range(0, height - patch_size + 1, stride):
             for j in range(0, width - patch_size + 1, stride):
                 patch = inputs[:, :, i:i+patch_size, j:j+patch_size]
                 patches.append(patch)
         
-        patches = torch.stack(patches, dim=1)  
+        # Stack patches and pass through model
+        patches = torch.stack(patches, dim=1)
         num_patches = patches.shape[1]
-        patches = patches.view(-1, channels, patch_size, patch_size) 
-        
-        labels_expanded = labels.unsqueeze(1).expand(-1, num_patches).reshape(-1)
+        patches = patches.view(-1, channels, patch_size, patch_size)
         
         outputs = model(patches)
-        loss = criterion(outputs, labels_expanded)
+        
+        # Reshape outputs back to (batch, num_patches, num_classes)
+        num_classes = outputs.shape[1]
+        outputs = outputs.view(batch_size, num_patches, num_classes)
+        
+        # Aggregate predictions across patches for each image
+        if aggregation == 'mean':
+            aggregated_outputs = outputs.mean(dim=1)
+        elif aggregation == 'max':
+            aggregated_outputs = outputs.max(dim=1)[0]
+        else:
+            raise ValueError(f"Unknown or non-differentiable aggregation method for training: {aggregation}")
+
+        # Calculate loss on aggregated outputs
+        loss = criterion(aggregated_outputs, labels)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        train_loss += loss.item() * batch_size  
-        _, predicted = outputs.max(1)
-        correct += (predicted == labels_expanded).sum().item()
-        total += labels_expanded.size(0)
+        # Track loss and accuracy
+        train_loss += loss.item() * batch_size
+        _, predicted = aggregated_outputs.max(1)
+        correct += (predicted == labels).sum().item()
+        total += labels.size(0)
 
-    avg_loss = train_loss / len(dataloader.dataset)
+    avg_loss = train_loss / total
     accuracy = correct / total
     return avg_loss, accuracy
 
