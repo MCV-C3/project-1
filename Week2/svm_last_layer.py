@@ -17,6 +17,9 @@ from fisher_vector import neural_based_fisher
 from IPython.display import clear_output
 from torch.utils.data import TensorDataset, DataLoader
 
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+from sklearn.svm import SVC
 import os
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 
@@ -48,7 +51,7 @@ model.load_state_dict(torch.load(f"SimpleModel/768_input_1_layers_256_dimension.
 train_feats, train_labels = extract_features(model, train_loader, device, 1)
 test_feats, test_labels = extract_features(model, test_loader, device, 1)
 
-svm = LinearSVC(C=1.0)
+svm = SVC(kernel='rbf', C=1.0, gamma='scale')
 svm.fit(train_feats, train_labels)
 svm_acc = svm.score(test_feats, test_labels)
 

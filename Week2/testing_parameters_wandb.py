@@ -110,10 +110,17 @@ def train_simple_model(model, model_name, train_loader, test_loader, search_type
 
         if  best_test_accuracy <  test_accuracy:
             best_test_loss = test_loss
+            
             train_loss_at_best = train_accuracy
             best_test_accuracy = test_accuracy
+            
             best_epoch = epoch + 1
             model_dict = model.state_dict()
+
+            
+            # Save immediately when we find a better model
+            torch.save(model_dict, f"SimpleModel/{model_name}.pth")
+            print(f"New best model saved! Epoch {best_epoch}, Accuracy: {best_test_accuracy:.4f}")
             
             # Log best model to WandB
             if search_type:
@@ -122,13 +129,11 @@ def train_simple_model(model, model_name, train_loader, test_loader, search_type
                     f"{search_type}/best_test_accuracy": best_test_accuracy,
                     f"{search_type}/best_epoch": best_epoch,
                 })
-        if epoch % 10 == 0:
-            torch.save(model_dict, f"SimpleModel/{model_name}.pth")
+
             
         print(f"Epoch {epoch + 1}/{num_epochs} - "
               f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
               f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
-    torch.save(model_dict, f"SimpleModel/{model_name}.pth")
     return best_test_accuracy, train_loss_at_best, best_epoch
 
 
@@ -319,14 +324,14 @@ test_loader = DataLoader(test_dataset_gpu, batch_size=128, shuffle=False, num_wo
 # )})
 
 # ==================== DIMENSION SEARCH ====================
-wandb.log({"search_phase": "dimension_search"})
-best_accuracy = 100000
-dimension_search_results = {}
-optimal_layer_n = 1
-best_hidden_layers_n = 1
-hidden_layers_n = 1
+# wandb.log({"search_phase": "dimension_search"})
+# best_accuracy = 100000
+# dimension_search_results = {}
+# optimal_layer_n = 1
+# best_hidden_layers_n = 1
+# hidden_layers_n = 1
 
-# for hidden_dim in [32, 64, 128, 256, 512, 300]:
+# for hidden_dim in [ 256]:
 #     print(f"\n{'='*50}")
 #     print(f"Testing hidden dimension: {hidden_dim}")
 #     print(f"{'='*50}\n")
@@ -357,6 +362,7 @@ hidden_layers_n = 1
 #     columns=["hidden_dim", "best_accuracy", "train_accuracy", "best_epoch"],
 #     data=[[k, v[0], v[1], v[2]] for k, v in dimension_search_results.items()]
 # )})
+
 
 # ==================== PATCH SEARCH ====================
 wandb.log({"search_phase": "patch_search"})
@@ -418,9 +424,10 @@ test_loader = DataLoader(test_dataset_gpu, batch_size=128, shuffle=False, num_wo
 best_hidden_dim = 256
 
 hidden_dim = 256
+hidden_layers_n = 1
 
 
-for patch_size in [4,8,16, 32, 64,]:
+for patch_size in [8]:
     print(f"\n{'='*50}")
     print(f"Testing patch size: {patch_size}x{patch_size}")
     print(f"{'='*50}\n")
@@ -469,17 +476,15 @@ for patch_size in [4,8,16, 32, 64,]:
             best_epoch = epoch + 1
             best_train = train_accuracy
             os.makedirs(f"PatchModel", exist_ok=True)
-            model_dict = model.state_dict()
-            
+            torch.save(model.state_dict(), f"PatchModel/{model_name}.pth")
+            print(f"New best model saved! Epoch {best_epoch}, Accuracy: {best_accuracy:.4f}")
             wandb.log({
                 f"patch_search/best_test_loss": best_test_loss,
                 f"patch_search/best_accuracy": best_accuracy,
                 f"patch_search/best_epoch": best_epoch,
             })
-        if epoch % 10 == 0:
-            torch.save(model_dict, f"PatchModel/{model_name}.pth")
+            
     
-    torch.save(model_dict, f"SimpleModel/{model_name}.pth")
     patches_search_results[patch_size] = [best_accuracy, train_accuracy, best_epoch]
 
 with open('patches_search_results.json', 'w') as f:

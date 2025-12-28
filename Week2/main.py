@@ -127,6 +127,8 @@ def test(model, dataloader, criterion, device):
     accuracy = correct / total
     return avg_loss, accuracy
 
+
+
 def test_patches(model, dataloader, criterion, device, patch_size, stride=None, aggregation='mean'):
     model.eval()
     test_loss = 0.0
