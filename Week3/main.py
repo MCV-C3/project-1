@@ -1,5 +1,6 @@
+from enum import auto
 from typing import *
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader,TensorDataset
 from torchvision.datasets import ImageFolder
 import torch
 import torch.nn as nn
@@ -10,18 +11,32 @@ from models import SimpleModel, WraperModel
 import torchvision.transforms.v2  as F
 from torchviz import make_dot
 import tqdm
+from kornia import augmentation as aug
+
+
+import argparse
 
 from torchvision.transforms import Compose, ToTensor, Normalize, RandomHorizontalFlip, RandomResizedCrop
 
+import wandb
+
+import os
+
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 
 # Train function
-def train(model, dataloader, criterion, optimizer, device):
+def train(model, dataloader, criterion, optimizer, device,augmentations=None):
     model.train()
     train_loss = 0.0
     correct, total = 0, 0
 
     for inputs, labels in dataloader:
+
         inputs, labels = inputs.to(device), labels.to(device)
+        if augmentations is not None:
+            inputs = augmentations(inputs)
 
         # Forward pass
         outputs = model(inputs)
@@ -127,9 +142,53 @@ def plot_computational_graph(model: torch.nn.Module, input_size: tuple, filename
     print(f"Computational graph saved as {filename}")
 
 
+def load_data_on_gpu(data,device,batch_size=256):
+
+    
+    data_images = []
+    data_labels = []
+    for img, label in data:
+        data_images.append(img)
+        data_labels.append(label)
+
+    data_images = torch.stack(data_images).to(device=device)
+    data_labels = torch.tensor(data_labels, device=device)
+
+    dataset_gpu = TensorDataset(data_images, data_labels)
+
+    return DataLoader(dataset_gpu, batch_size=256, shuffle=True, num_workers=0)
+
+
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("--epochs", required=False, type=int,default=1000)
+    parser.add_argument("--lr", required=False, type=int,default=0.001)
+    parser.add_argument("--batch", required=False, type=int,default=256)
+    parser.add_argument("--run_name", required=False, type=str,default="")
+
+
+    args = parser.parse_args()
+
+    base_name = args.run_name
+
+
+    wandb.login()
+
+    project = "C3-Week3"
+
+
+    config = {
+        'epochs' : args.epochs,
+        'lr' : args.lr,
+        'batch_size' : args.batch,
+    }
+        
+
     torch.manual_seed(42)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     transformation  = F.Compose([
                                     F.ToImage(),
@@ -137,41 +196,115 @@ if __name__ == "__main__":
                                     F.Resize(size=(224, 224)),
                                 ])
     
-    data_train = ImageFolder("~/data/Master/MIT_split/train", transform=transformation)
-    data_test = ImageFolder("~/data/Master/MIT_split/test", transform=transformation) 
+    base_path = "/home/msiau/data/tmp/jventosa/2425"
 
-    train_loader = DataLoader(data_train, batch_size=16, pin_memory=True, shuffle=True, num_workers=8)
-    test_loader = DataLoader(data_test, batch_size=1, pin_memory=True, shuffle=False, num_workers=8)
+    choosen_split = 1
+
+    data_train = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/train", transform=transformation)
+    data_test = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/test", transform=transformation) 
+
+    train_loader = load_data_on_gpu(data_train,device=device,batch_size=config["batch_size"])
+    test_loader = load_data_on_gpu(data_test,device=device,batch_size=128)
 
     C, H, W = np.array(data_train[0][0]).shape
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
 
 
-    model = WraperModel(num_classes=8, feature_extraction=True)#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
+    model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=False,dropout=True)#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
 
     model = model.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    num_epochs = 3
+    optimizer = optim.Adam(model.parameters(), lr=config["lr"])
+    num_epochs = config["epochs"]
+
 
     train_losses, train_accuracies = [], []
     test_losses, test_accuracies = [], []
+
+    best_test_accuracy = 0.0
+
+    best_model = model.state_dict()
+
+    epochs_since_improvement = 0
+
+    best_epoch = 0
     
-    for epoch in tqdm.tqdm(range(num_epochs), desc="TRAINING THE MODEL"):
-        train_loss, train_accuracy = train(model, train_loader, criterion, optimizer, device)
-        test_loss, test_accuracy = test(model, test_loader, criterion, device)
+    run_name = f"{base_name}_{config['epochs']}_{config['lr']}_{config['batch_size']}"
 
-        train_losses.append(train_loss)
-        train_accuracies.append(train_accuracy)
-        test_losses.append(test_loss)
-        test_accuracies.append(test_accuracy)
 
-        print(f"Epoch {epoch + 1}/{num_epochs} - "
-              f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
-              f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
+
+    augmentations = aug.AugmentationSequential(
+        aug.RandomHorizontalFlip(p=0.5),
+        aug.RandomRotation(9),
+        aug.RandomVerticalFlip(p=0.05),
+        aug.RandomGrayscale(p=0.1),
+        aug.RandomResizedCrop(
+        size=(224, 224),       
+        scale=(0.8, 1),
+        ratio=(1, 1)),
+        aug.ColorJitter(
+        brightness=0.2,
+        contrast=0.2,
+        saturation=0.2,
+        hue=0.05),
+        aug.RandomGaussianBlur(kernel_size=5, sigma=(0.1, 0.6))
         
-    torch.save(model.state_dict(), "./saved_model.pt")
+    )
+
+    augmentations = aug.AugmentationSequential(
+        aug.RandomHorizontalFlip(p=0),
+    )
+
+
+    with wandb.init(project=project, config=config,name=run_name) as run:
+        epoch = 0
+
+        pbar = tqdm.tqdm(total=num_epochs, desc="TRAINING THE MODEL")
+
+        continue_train = True
+
+        while continue_train:
+
+
+            epochs_since_improvement += 1
+
+
+            train_loss, train_accuracy = train(model, train_loader, criterion, optimizer, device,augmentations=augmentations)
+            test_loss, test_accuracy = test(model, test_loader, criterion, device)
+
+            train_losses.append(train_loss)
+            train_accuracies.append(train_accuracy)
+            test_losses.append(test_loss)
+            test_accuracies.append(test_accuracy)
+
+            run.log({"train_loss": train_loss, "train_ accuracy": train_accuracy, "test_loss": test_loss, "test_accuracy": test_accuracy, "epoch": epoch,})
+
+            if test_accuracy > best_test_accuracy:
+                best_test_accuracy = test_accuracy
+                best_model = model.state_dict()
+                epochs_since_improvement = 0
+                best_epoch = epoch + 1 
+                
+
+            if epochs_since_improvement >= 100:
+                print(f"Early stopping at epoch {best_epoch}.")
+                continue_train = False
+
+
+            print(f"Epoch {epoch + 1}/{num_epochs} - "
+                f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
+                f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
+
+            epoch += 1
+            pbar.update(1)
+
+            if epoch == num_epochs:
+                continue_train = False 
+        
+    torch.save(best_model, "./saved_model.pt")
+
+    run.log({"BestEpoch": best_epoch, "BestTestAccuracy": best_test_accuracy})
 
     # Plot results
     plot_metrics({"loss": train_losses, "accuracy": train_accuracies}, {"loss": test_losses, "accuracy": test_accuracies}, "loss")

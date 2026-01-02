@@ -51,20 +51,59 @@ class SimpleModel(nn.Module):
 
 
 class WraperModel(nn.Module):
-    def __init__(self, num_classes: int, feature_extraction: bool=True):
+    def __init__(self, num_classes: int, feature_extraction: bool=True,batch_norm: bool=True, dropout: bool = True,dropout_prob: float = 0.5):
         super(WraperModel, self).__init__()
 
         # Load pretrained VGG16 model
-        self.backbone = models.vgg16(weights='IMAGENET1K_V1')
+        self.backbone = models.squeezenet1_0(weights='IMAGENET1K_V1')
         
+        if batch_norm:
+            self._add_batch_norm_to_backbone()
+
+
+        if dropout:
+            self.backbone.classifier[0] = nn.Dropout(p=dropout_prob)
+        else:
+            self.backbone.classifier[0] = nn.Identity()
+
         if feature_extraction:
             self.set_parameter_requires_grad(feature_extracting=feature_extraction)
+        
+                
+                
+        final_conv = self.backbone.classifier[1] 
 
-        # Modify the classifier for the number of classes
-        self.backbone.classifier[-1] = nn.Linear(self.backbone.classifier[-1].in_features, num_classes)
+        self.backbone.classifier[1] = nn.Conv2d(
+            in_channels=final_conv.in_channels,
+            out_channels=num_classes,
+            kernel_size=1
+        )
 
     def forward(self, x):
         return self.backbone(x)
+
+    def _add_batch_norm_to_backbone(self):
+        """
+        Iterates through Fire modules and adds BN after the squeeze and expand convs.
+        """
+        for name, module in self.backbone.features.named_children():
+
+            if isinstance(module, models.squeezenet.Fire):
+
+                module.squeeze = nn.Sequential(
+                    module.squeeze,
+                    nn.BatchNorm2d(module.squeeze.out_channels)
+                )
+
+                module.expand1x1 = nn.Sequential(
+                    module.expand1x1,
+                    nn.BatchNorm2d(module.expand1x1.out_channels)
+                )
+
+                module.expand3x3 = nn.Sequential(
+                    module.expand3x3,
+                    nn.BatchNorm2d(module.expand3x3.out_channels)
+                )
     
 
     def extract_feature_maps(self, input_image:torch.Tensor):
@@ -173,7 +212,7 @@ if __name__ == "__main__":
 
     # Load a pretrained model and modify it
     model = WraperModel(num_classes=8, feature_extraction=False)
-    #model.load_state_dict(torch.load("saved_model.pt"))
+    model.load_state_dict(torch.load("saved_model.pt"))
     #model = model
 
     """
@@ -199,12 +238,12 @@ if __name__ == "__main__":
                                     F.Resize(size=(256, 256)),
                                 ])
     # Example GradCAM usage
-    dummy_input = Image.open("/home/cboned/data/Master/MIT_split/test/highway/art803.jpg")#torch.randn(1, 3, 224, 224)
+    dummy_input = Image.open("/home/msiau/data/tmp/jventosa/2425/MIT_large_train/test/highway/art803.jpg")#torch.randn(1, 3, 224, 224)
     input_image = transformation(dummy_input).unsqueeze(0)
 
+    print(len(model.backbone.features))
 
-
-    target_layers = [model.backbone.features[26]]
+    target_layers = [model.backbone.features[12]]
     targets = [ClassifierOutputTarget(6)]
     
     image = torch.from_numpy(np.array(dummy_input)).cpu().numpy()
@@ -242,14 +281,14 @@ if __name__ == "__main__":
         ax.axis("off")
         ax.set_title(f"{layer_names[i].split('(')[0]}_{i}", fontsize=10)
 
-
+    plt.savefig("feature_maps.png")
     plt.show()
 
     ## Plot a concret layer feature map when processing a image thorugh the model
     ## Is not necessary to have gradients
 
     with torch.no_grad():
-        feature_map = (model.extract_features_from_hooks(x=input_image, layers=["features.28"]))["features.28"]
+        feature_map = (model.extract_features_from_hooks(x=input_image, layers=["features.12"]))["features.12"]
         feature_map = feature_map.squeeze(0)  # Remove the batch dimension
         print(feature_map.shape)
         processed_feature_map, _ = torch.min(feature_map, 0) 
@@ -257,10 +296,11 @@ if __name__ == "__main__":
     # Plot the result
     plt.imshow(processed_feature_map, cmap="gray")
     plt.axis("off")
+    plt.savefig("processed_feature_map.png")
     plt.show()
 
 
 
     ## Draw the model
-    model_graph = draw_graph(model, input_size=(1, 3, 224, 224), device='meta', expand_nested=True, roll=True)
-    model_graph.visual_graph.render(filename="test", format="png", directory="./Week3")
+    # model_graph = draw_graph(model, input_size=(1, 3, 224, 224), device='meta', expand_nested=True, roll=True)
+    # model_graph.visual_graph.render(filename="test", format="png", directory="./Week3")

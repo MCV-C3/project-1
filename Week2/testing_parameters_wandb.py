@@ -287,81 +287,81 @@ test_dataset_gpu = TensorDataset(test_images, test_labels)
 train_loader = DataLoader(train_dataset_gpu, batch_size=256, shuffle=True, num_workers=0)
 test_loader = DataLoader(test_dataset_gpu, batch_size=128, shuffle=False, num_workers=0)
 
-# layer_search_results = {}
-# best_accuracy = 100000
+layer_search_results = {}
+best_accuracy = 100000
 
-# for hidden_layers_n in [1, 2, 3, 4, 5, 6, 7, 8]:
-#     print(f"\n{'='*50}")
-#     print(f"Testing hidden layers: {hidden_layers_n}")
-#     print(f"{'='*50}\n")
+for hidden_layers_n in [1, 2, 3, 4, 5, 6, 7, 8]:
+    print(f"\n{'='*50}")
+    print(f"Testing hidden layers: {hidden_layers_n}")
+    print(f"{'='*50}\n")
     
-#     C, H, W = np.array(data_train[0][0]).shape
-#     input_size = C * H * W
-#     hidden_dim = 300
+    C, H, W = np.array(data_train[0][0]).shape
+    input_size = C * H * W
+    hidden_dim = 300
 
-#     model = SimpleModel(input_d=C*H*W, hidden_layers_n=hidden_layers_n, hidden_d=hidden_dim, output_d=11)
-#     model_name = f"{input_size}_input_{hidden_layers_n}_layers_{hidden_dim}_dimension"
+    model = SimpleModel(input_d=C*H*W, hidden_layers_n=hidden_layers_n, hidden_d=hidden_dim, output_d=11)
+    model_name = f"{input_size}_input_{hidden_layers_n}_layers_{hidden_dim}_dimension"
     
-#     layer_search_results[hidden_layers_n] = train_simple_model(
-#         model, model_name, train_loader, test_loader,
-#         search_type=f"layer_search_{hidden_layers_n}", param_value=hidden_layers_n,augmentation=augmentations
-#     )
+    layer_search_results[hidden_layers_n] = train_simple_model(
+        model, model_name, train_loader, test_loader,
+        search_type=f"layer_search_{hidden_layers_n}", param_value=hidden_layers_n,augmentation=augmentations
+    )
     
-#     if layer_search_results[hidden_layers_n][0] < best_accuracy:
-#         best_accuracy = layer_search_results[hidden_layers_n][0]
-#         best_hidden_layers_n = hidden_layers_n
-#         wandb.log({
-#             "layer_search/best_layer_count": best_hidden_layers_n,
-#             "layer_search/best_overall_accuracy": best_accuracy,
-#         })
+    if layer_search_results[hidden_layers_n][0] < best_accuracy:
+        best_accuracy = layer_search_results[hidden_layers_n][0]
+        best_hidden_layers_n = hidden_layers_n
+        wandb.log({
+            "layer_search/best_layer_count": best_hidden_layers_n,
+            "layer_search/best_overall_accuracy": best_accuracy,
+        })
 
-# with open('layer_search_results.json', 'w') as f:
-#     json.dump(layer_search_results, f, indent=4)
+with open('layer_search_results.json', 'w') as f:
+    json.dump(layer_search_results, f, indent=4)
 
-# wandb.log({"layer_search/results": wandb.Table(
-#     columns=["hidden_layers", "best_accuracy", "train_accuracy", "best_epoch"],
-#     data=[[k, v[0], v[1], v[2]] for k, v in layer_search_results.items()]
-# )})
+wandb.log({"layer_search/results": wandb.Table(
+    columns=["hidden_layers", "best_accuracy", "train_accuracy", "best_epoch"],
+    data=[[k, v[0], v[1], v[2]] for k, v in layer_search_results.items()]
+)})
 
-# ==================== DIMENSION SEARCH ====================
-# wandb.log({"search_phase": "dimension_search"})
-# best_accuracy = 100000
-# dimension_search_results = {}
-# optimal_layer_n = 1
-# best_hidden_layers_n = 1
-# hidden_layers_n = 1
+==================== DIMENSION SEARCH ====================
+wandb.log({"search_phase": "dimension_search"})
+best_accuracy = 100000
+dimension_search_results = {}
+optimal_layer_n = 1
+best_hidden_layers_n = 1
+hidden_layers_n = 1
 
-# for hidden_dim in [ 256]:
-#     print(f"\n{'='*50}")
-#     print(f"Testing hidden dimension: {hidden_dim}")
-#     print(f"{'='*50}\n")
+for hidden_dim in [ 256]:
+    print(f"\n{'='*50}")
+    print(f"Testing hidden dimension: {hidden_dim}")
+    print(f"{'='*50}\n")
     
-#     C, H, W = np.array(data_train[0][0]).shape
-#     input_size = C * H * W
+    C, H, W = np.array(data_train[0][0]).shape
+    input_size = C * H * W
 
-#     model = SimpleModel(input_d=C*H*W, hidden_layers_n=best_hidden_layers_n, hidden_d=hidden_dim, output_d=11)
-#     model_name = f"{input_size}_input_{hidden_layers_n}_layers_{hidden_dim}_dimension"
+    model = SimpleModel(input_d=C*H*W, hidden_layers_n=best_hidden_layers_n, hidden_d=hidden_dim, output_d=11)
+    model_name = f"{input_size}_input_{hidden_layers_n}_layers_{hidden_dim}_dimension"
     
-#     dimension_search_results[hidden_dim] = train_simple_model(
-#         model, model_name, train_loader, test_loader,
-#         search_type=f"dimension_search_{hidden_dim}", param_value=hidden_dim,augmentation=augmentations
-#     )
+    dimension_search_results[hidden_dim] = train_simple_model(
+        model, model_name, train_loader, test_loader,
+        search_type=f"dimension_search_{hidden_dim}", param_value=hidden_dim,augmentation=augmentations
+    )
     
-#     if dimension_search_results[hidden_dim][0] < best_accuracy:
-#         best_accuracy = dimension_search_results[hidden_dim][0]
-#         best_hidden_dim = hidden_dim
-#         wandb.log({
-#             "dimension_search/best_hidden_dim": best_hidden_dim,
-#             "dimension_search/best_overall_accuracy": best_accuracy,
-#         })
+    if dimension_search_results[hidden_dim][0] < best_accuracy:
+        best_accuracy = dimension_search_results[hidden_dim][0]
+        best_hidden_dim = hidden_dim
+        wandb.log({
+            "dimension_search/best_hidden_dim": best_hidden_dim,
+            "dimension_search/best_overall_accuracy": best_accuracy,
+        })
 
-# with open('dimension_search_results.json', 'w') as f:
-#     json.dump(dimension_search_results, f, indent=4)
+with open('dimension_search_results.json', 'w') as f:
+    json.dump(dimension_search_results, f, indent=4)
 
-# wandb.log({"dimension_search/results": wandb.Table(
-#     columns=["hidden_dim", "best_accuracy", "train_accuracy", "best_epoch"],
-#     data=[[k, v[0], v[1], v[2]] for k, v in dimension_search_results.items()]
-# )})
+wandb.log({"dimension_search/results": wandb.Table(
+    columns=["hidden_dim", "best_accuracy", "train_accuracy", "best_epoch"],
+    data=[[k, v[0], v[1], v[2]] for k, v in dimension_search_results.items()]
+)})
 
 
 # ==================== PATCH SEARCH ====================

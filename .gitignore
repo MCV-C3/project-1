@@ -2,4 +2,6 @@ places_reduced/*
 */__pycache__/*
 Week1/cache/*
 *.pth
+*.pt
+*.proof
 */wandb/*
