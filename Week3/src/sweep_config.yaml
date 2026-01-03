@@ -1,0 +1,28 @@
+program: src/wandb_train.py
+method: bayes
+metric:
+  name: val_acc
+  goal: maximize
+
+parameters:
+
+  model:
+    values: ["resnet18","squeezenet"]
+
+  dropout:
+    values: [0.0,0.3,0.5]
+
+  optimizer:
+    values: ["adam","sgd"]
+
+  learning_rate:
+    values: [0.0001,0.0003,0.001,0.003]
+
+  batch_size:
+    values: [32,64,128]
+
+  weight_decay:
+    values: [0.0,0.0001]
+
+  epochs:
+    value: 20
