@@ -301,6 +301,10 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", required=False, type=float,default=0.0001)
     parser.add_argument("--optimizer", required=False, type=str,choices=['adam', 'sgd'],default="adam") 
     parser.add_argument("--learning_rate", required=False, type=float,default=0.001)
+    parser.add_argument("--batch_normalization", required=False, type=bool,default=False)
+    parser.add_argument("--dropout", required=False, type=bool,default=True)
+    parser.add_argument("--dropout_prob", required=False, type=float,default=0.5)
+
 
 
 
@@ -322,6 +326,9 @@ if __name__ == "__main__":
         'weight_decay': args.weight_decay,
         'optimizer': args.optimizer,
         'learning_rate': args.learning_rate,
+        'batch_normalization': args.batch_normalization,
+        'dropout': True,
+        'dropout_prob': 0.5
     }
         
 
@@ -350,7 +357,7 @@ if __name__ == "__main__":
     
 
 
-    model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=False,dropout=True)#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
+    model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=config["batch_normalization"],dropout=config["dropout"],dropout_prob=config["dropout_prob"])#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
 
     model = model.to(device)
     criterion = nn.CrossEntropyLoss()
