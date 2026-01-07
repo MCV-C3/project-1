@@ -1,5 +1,6 @@
 from enum import auto
 from typing import *
+from networkx import freeze
 from torch.utils.data import DataLoader,TensorDataset
 from torchvision.datasets import ImageFolder
 import torch
@@ -12,6 +13,8 @@ import torchvision.transforms.v2  as F
 from torchviz import make_dot
 import tqdm
 from kornia import augmentation as aug
+
+from torchvision.models.squeezenet import Fire
 
 
 import argparse
@@ -159,7 +162,134 @@ def load_data_on_gpu(data,device,batch_size=256):
     return DataLoader(dataset_gpu, batch_size=256, shuffle=True, num_workers=0)
 
 
+def unfreeze_layers(model, freeze_count):
+    freezed = True
+    while freezed:
+        last_fire = model.backbone.features[-freeze_count]
+        if isinstance(last_fire, Fire):
+            for param in last_fire.parameters():
+                param.requires_grad = True
+            freezed = False
+            freeze_count += 1
+        else:
+            freeze_count += 1
+    return freeze_count
+
+
+def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_epochs,config,run_name,augmentations):
+    
+    train_losses, train_accuracies = [], []
+    test_losses, test_accuracies = [], []
+
+    best_test_accuracy = 0.0
+
+    best_model = model.state_dict()
+
+    epochs_since_improvement = 0
+
+    best_epoch = 0
+
+    freeze_count = 1
+    fire_count = 0
+
+    with wandb.init(project=project, config=config,name=run_name) as run:
+        epoch = 0
+
+        pbar = tqdm.tqdm(total=num_epochs, desc="TRAINING THE MODEL")
+
+        continue_train = True
+
+        while continue_train:
+
+
+            epochs_since_improvement += 1
+
+
+            train_loss, train_accuracy = train(model, train_loader, criterion, optimizer, device,augmentations=augmentations)
+            test_loss, test_accuracy = test(model, test_loader, criterion, device)
+
+            train_losses.append(train_loss)
+            train_accuracies.append(train_accuracy)
+            test_losses.append(test_loss)
+            test_accuracies.append(test_accuracy)
+
+            run.log({"train_loss": train_loss, "train_ accuracy": train_accuracy, "test_loss": test_loss, "test_accuracy": test_accuracy, "epoch": epoch,})
+
+            if test_accuracy > best_test_accuracy:
+                best_test_accuracy = test_accuracy
+                best_model = model.state_dict()
+                epochs_since_improvement = 0
+                best_epoch = epoch + 1 
+                
+
+            if epochs_since_improvement >= 50:
+                if config["unfreeze"] == "None":
+                    print(f"Early stopping at epoch {best_epoch}.")
+                    continue_train = False
+                    
+                if config["unfreeze"] == "Last":
+                    model.load_state_dict(best_model)
+                    print("Unfreezing last layer")
+                    if fire_count < 1:
+                        last_fire = model.backbone.features[-1]
+                        
+                        for param in last_fire.parameters():
+                            param.requires_grad = True
+                        fire_count += 1
+                        epochs_since_improvement = 0
+
+                    else:
+                        print(f"Early stopping at epoch {best_epoch}.")
+                        continue_train = False
+                    
+                if config["unfreeze"] == "All":
+                    
+                    if fire_count < 8:
+                        model.load_state_dict(best_model)
+                        freeze_count = unfreeze_layers(model, freeze_count)
+                        fire_count += 1
+                        epochs_since_improvement = 0
+                    else:
+                        print(f"Early stopping at epoch {best_epoch}.")
+                        continue_train = False
+                        
+                else: 
+                    if freeze_count <= config["unfreeze"] :
+                        model.load_state_dict(best_model)
+                        freeze_count = unfreeze_layers(model, freeze_count)
+                        fire_count += 1
+                        epochs_since_improvement = 0
+                    else:
+                        print(f"Early stopping at epoch {best_epoch}.")
+                        continue_train = False
+                
+
+            print(f"Epoch {epoch + 1}/{num_epochs} - "
+                f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
+                f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
+
+            epoch += 1
+            pbar.update(1)
+
+            if epoch == num_epochs:
+                continue_train = False 
+        
+    torch.save(best_model, "./saved_model.pt")
+
+    run.log({"BestEpoch": best_epoch, "BestTestAccuracy": best_test_accuracy})
+
+def unfreeze_arg(string):
+    if string not in ['None', 'Last', 'All']:
+        return int(string)
+    else:
+        return string
+
+
+
 if __name__ == "__main__":
+
+    
+
 
     parser = argparse.ArgumentParser()
 
@@ -167,6 +297,11 @@ if __name__ == "__main__":
     parser.add_argument("--lr", required=False, type=int,default=0.001)
     parser.add_argument("--batch", required=False, type=int,default=256)
     parser.add_argument("--run_name", required=False, type=str,default="")
+    parser.add_argument("--unfreeze", required=False, type=unfreeze_arg,default="None")
+    parser.add_argument("--weight_decay", required=False, type=float,default=0.0001)
+    parser.add_argument("--optimizer", required=False, type=str,choices=['adam', 'sgd'],default="adam") 
+    parser.add_argument("--learning_rate", required=False, type=float,default=0.001)
+
 
 
     args = parser.parse_args()
@@ -183,6 +318,10 @@ if __name__ == "__main__":
         'epochs' : args.epochs,
         'lr' : args.lr,
         'batch_size' : args.batch,
+        'unfreeze' : args.unfreeze,
+        'weight_decay': args.weight_decay,
+        'optimizer': args.optimizer,
+        'learning_rate': args.learning_rate,
     }
         
 
@@ -215,25 +354,26 @@ if __name__ == "__main__":
 
     model = model.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=config["lr"])
-    num_epochs = config["epochs"]
-
-
-    train_losses, train_accuracies = [], []
-    test_losses, test_accuracies = [], []
-
-    best_test_accuracy = 0.0
-
-    best_model = model.state_dict()
-
-    epochs_since_improvement = 0
-
-    best_epoch = 0
     
-    run_name = f"{base_name}_{config['epochs']}_{config['lr']}_{config['batch_size']}"
-
-
-
+    
+    if config["optimizer"] == "adam":
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config["learning_rate"],
+            weight_decay=config["weight_decay"]
+        )
+    else:
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=config["learning_rate"],
+            momentum=0.9
+        )
+    
+    
+    num_epochs = config["epochs"]
+    
+    run_name = f"{base_name}_{config['epochs']}_{config['lr']}_{config['batch_size']}_{config['unfreeze']}"
+    
     augmentations = aug.AugmentationSequential(
         aug.RandomHorizontalFlip(p=0.5),
         aug.RandomRotation(9),
@@ -252,60 +392,11 @@ if __name__ == "__main__":
         
     )
 
-    augmentations = aug.AugmentationSequential(
+    """ augmentations = aug.AugmentationSequential(
         aug.RandomHorizontalFlip(p=0),
-    )
+    ) """
 
+    
+    train_run(train_loader,test_loader,model, criterion, optimizer, device,num_epochs,config,run_name,augmentations=augmentations)
 
-    with wandb.init(project=project, config=config,name=run_name) as run:
-        epoch = 0
-
-        pbar = tqdm.tqdm(total=num_epochs, desc="TRAINING THE MODEL")
-
-        continue_train = True
-
-        while continue_train:
-
-
-            epochs_since_improvement += 1
-
-
-            train_loss, train_accuracy = train(model, train_loader, criterion, optimizer, device,augmentations=augmentations)
-            test_loss, test_accuracy = test(model, test_loader, criterion, device)
-
-            train_losses.append(train_loss)
-            train_accuracies.append(train_accuracy)
-            test_losses.append(test_loss)
-            test_accuracies.append(test_accuracy)
-
-            run.log({"train_loss": train_loss, "train_ accuracy": train_accuracy, "test_loss": test_loss, "test_accuracy": test_accuracy, "epoch": epoch,})
-
-            if test_accuracy > best_test_accuracy:
-                best_test_accuracy = test_accuracy
-                best_model = model.state_dict()
-                epochs_since_improvement = 0
-                best_epoch = epoch + 1 
-                
-
-            if epochs_since_improvement >= 100:
-                print(f"Early stopping at epoch {best_epoch}.")
-                continue_train = False
-
-
-            print(f"Epoch {epoch + 1}/{num_epochs} - "
-                f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
-                f"Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.4f}")
-
-            epoch += 1
-            pbar.update(1)
-
-            if epoch == num_epochs:
-                continue_train = False 
-        
-    torch.save(best_model, "./saved_model.pt")
-
-    run.log({"BestEpoch": best_epoch, "BestTestAccuracy": best_test_accuracy})
-
-    # Plot results
-    plot_metrics({"loss": train_losses, "accuracy": train_accuracies}, {"loss": test_losses, "accuracy": test_accuracies}, "loss")
-    plot_metrics({"loss": train_losses, "accuracy": train_accuracies}, {"loss": test_losses, "accuracy": test_accuracies}, "accuracy")
+    

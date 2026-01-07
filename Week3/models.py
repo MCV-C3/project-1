@@ -12,6 +12,9 @@ from typing import *
 from torchview import draw_graph
 from graphviz import Source
 
+from torchvision.models.squeezenet import Fire
+
+
 from PIL import Image
 import torchvision.transforms.v2  as F
 import numpy as np 
@@ -188,6 +191,25 @@ class WraperModel(nn.Module):
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
+        
+        
+    def remove_fire_blocks(self,n):
+        fire_indices = [
+            i for i, m in enumerate(self.backbone.features)
+            if isinstance(m, Fire)
+        ]
+
+        remove_idxs = set(fire_indices[-n:])
+
+        new_features = nn.Sequential(
+            *[
+                m for i, m in enumerate(self.backbone.features)
+                if i not in remove_idxs
+            ]
+        )
+
+        self.backbone.features = new_features
+        
 
 
     def extract_grad_cam(self, input_image: torch.Tensor, 
