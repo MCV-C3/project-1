@@ -21,6 +21,54 @@ import numpy as np
 
 import pdb
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class AttentionPoolingHead(nn.Module):
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.attention_mask = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels // 2, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels // 2, 1, kernel_size=1)
+        )
+        
+        self.classifier = nn.Linear(in_channels, num_classes)
+
+    def forward(self, x):
+        attn_weights = self.attention_mask(x) 
+
+        b, c, h, w = attn_weights.shape
+        attn_weights = F.softmax(attn_weights.view(b, c, -1), dim=-1)
+        attn_weights = attn_weights.view(b, c, h, w)
+        
+
+        weighted_features = x * attn_weights
+        pooled_features = weighted_features.sum(dim=(2, 3)) 
+        
+        return self.classifier(pooled_features)
+
+
+
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.fc1 = nn.Linear(channels, channels // reduction, bias=False)
+        self.fc2 = nn.Linear(channels // reduction, channels, bias=False)
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = F.adaptive_avg_pool2d(x, 1).view(b, c)
+        y = F.relu(self.fc1(y), inplace=True)
+        y = torch.sigmoid(self.fc2(y)).view(b, c, 1, 1)
+        return x * y
+
 
 class SimpleModel(nn.Module):
 
@@ -54,8 +102,12 @@ class SimpleModel(nn.Module):
 
 
 class WraperModel(nn.Module):
-    def __init__(self, num_classes: int, feature_extraction: bool=True,batch_norm: bool=True, dropout: bool = True,dropout_prob: float = 0.5):
+    def __init__(self, num_classes: int, feature_extraction: bool=True,batch_norm: bool=True, dropout: bool = True,dropout_prob: float = 0.5,classifier_type: str = "FCN"):
         super(WraperModel, self).__init__()
+
+        self.num_classes = num_classes
+        self.classifier_type = classifier_type
+
 
         # Load pretrained VGG16 model
         self.backbone = models.squeezenet1_0(weights='IMAGENET1K_V1')
@@ -75,15 +127,79 @@ class WraperModel(nn.Module):
                 
                 
         final_conv = self.backbone.classifier[1] 
+        self.add_classifier(classifier_type,final_conv.in_channels, num_classes)
 
-        self.backbone.classifier[1] = nn.Conv2d(
-            in_channels=final_conv.in_channels,
-            out_channels=num_classes,
-            kernel_size=1
-        )
+
+    def add_classifier(self,classifier_type,input_size, num_classes: int):
+        if classifier_type == "FCN":
+            self.backbone.classifier[1] = nn.Conv2d(
+                in_channels=input_size,
+                out_channels=num_classes,
+                kernel_size=1
+            )
+        elif classifier_type == "MLP":
+            self.backbone.classifier[1] = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(input_size, 512),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(512, num_classes)
+            )
+        elif classifier_type == "Attention":
+            self.backbone.classifier[1] = AttentionPoolingHead(
+                in_channels=input_size, 
+                num_classes=num_classes
+            )
 
     def forward(self, x):
         return self.backbone(x)
+
+    def add_squeeze_and_excite(self,reduction):
+        new_layers = []
+
+        for layer in self.backbone.features:
+            new_layers.append(layer)
+
+            if isinstance(layer, Fire):
+                out_channels = (
+                    layer.expand1x1.out_channels +
+                    layer.expand3x3.out_channels
+                )
+                new_layers.append(SEBlock(out_channels, reduction))
+
+        self.backbone.features = nn.Sequential(*new_layers)
+        
+
+
+    def add_fire_modules(self, n, sq_channels, exp_channels):
+
+        
+        for _ in range(n):
+            # Get the input channels from the last module in the sequence
+            in_channels = self._get_last_output_channels()
+            
+            new_fire = Fire(in_channels, sq_channels, exp_channels, exp_channels)
+            
+            self.backbone.features.add_module(f"fire_{len(self.backbone.features)}", new_fire)
+        
+
+    def delete_last_n_modules(self, n):
+
+        new_features = list(self.backbone.features)[:-n]
+        self.features = nn.Sequential(*new_features)
+        self.add_classifier(self.classifier_type,self._get_last_output_channels(), self.num_classes)
+
+    def _get_last_output_channels(self):
+
+        last_layer = self.backbone.features[-1]
+        print(last_layer)
+        if isinstance(last_layer, Fire): # Specifically for Fire modules
+            return last_layer.expand1x1.out_channels + \
+                   last_layer.expand3x3.out_channels
+        elif hasattr(last_layer, 'out_channels'):
+            return last_layer.out_channels
+
 
     def _add_batch_norm_to_backbone(self):
         """
@@ -210,6 +326,7 @@ class WraperModel(nn.Module):
 
         self.backbone.features = new_features
         
+        self.add_classifier(self.classifier_type,self._get_last_output_channels(), self.num_classes)
 
 
     def extract_grad_cam(self, input_image: torch.Tensor, 

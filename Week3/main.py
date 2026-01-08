@@ -227,7 +227,7 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
                     print(f"Early stopping at epoch {best_epoch}.")
                     continue_train = False
                     
-                if config["unfreeze"] == "Last":
+                elif config["unfreeze"] == "Last":
                     model.load_state_dict(best_model)
                     print("Unfreezing last layer")
                     if fire_count < 1:
@@ -242,7 +242,7 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
                         print(f"Early stopping at epoch {best_epoch}.")
                         continue_train = False
                     
-                if config["unfreeze"] == "All":
+                elif config["unfreeze"] == "All":
                     
                     if fire_count < 8:
                         model.load_state_dict(best_model)
@@ -304,6 +304,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch_normalization", required=False, type=bool,default=False)
     parser.add_argument("--dropout", required=False, type=bool,default=True)
     parser.add_argument("--dropout_prob", required=False, type=float,default=0.5)
+    parser.add_argument("--squeeze_excite", required=False, type=bool,default=False)
+    parser.add_argument("--reduction", required=False, type=int,default=16)
+    parser.add_argument("--classifier_type", required=False, type=str,choices=['FCN', 'MLP', 'Attention'],default="FCN")
 
 
 
@@ -327,8 +330,11 @@ if __name__ == "__main__":
         'optimizer': args.optimizer,
         'learning_rate': args.learning_rate,
         'batch_normalization': args.batch_normalization,
-        'dropout': True,
-        'dropout_prob': 0.5
+        'dropout': args.dropout,
+        'dropout_prob': args.dropout_prob,
+        'add_squeeze_excite': args.squeeze_excite,
+        'reduction': args.reduction,
+        'classifier_type': args.classifier_type,
     }
         
 
@@ -359,7 +365,15 @@ if __name__ == "__main__":
 
     model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=config["batch_normalization"],dropout=config["dropout"],dropout_prob=config["dropout_prob"])#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
 
+    if config["add_squeeze_excite"]:
+        model.add_squeeze_and_excite(reduction=config["reduction"])
+
+    model.delete_last_n_modules(n=3)
+    print(model.backbone.features)
+    # model.add_fire_modules(n=2, sq_channels=64, exp_channels=256)
+    
     model = model.to(device)
+
     criterion = nn.CrossEntropyLoss()
     
     
