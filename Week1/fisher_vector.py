@@ -488,7 +488,12 @@ def final_mod3(train_dataset,test_dataset):
     print("Predicted")
     test_acc = accuracy_score(y_test, y_pred)
 
-    return test_acc, (y_pred,y_test)
+    train_acc = accuracy_score(y_train, clf.predict(X_train_scaled))
+
+
+    return test_acc, (y_pred,y_test),train_acc
+
+
 
 
 if __name__ == "__main__":

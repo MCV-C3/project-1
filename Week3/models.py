@@ -16,7 +16,7 @@ from torchvision.models.squeezenet import Fire
 
 
 from PIL import Image
-import torchvision.transforms.v2  as F
+import torchvision.transforms.v2  as Transform
 import numpy as np 
 
 import pdb
@@ -138,19 +138,23 @@ class WraperModel(nn.Module):
                 kernel_size=1
             )
         elif classifier_type == "MLP":
+            
             self.backbone.classifier[1] = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),
                 nn.Flatten(),
-                nn.Linear(input_size, 512),
+                nn.Linear(input_size*13*13, 512),
                 nn.ReLU(),
-                nn.Dropout(0.3),
-                nn.Linear(512, num_classes)
+                nn.Dropout(0.3),  
             )
+            self.backbone.classifier[2] = nn.Linear(512, num_classes)
+            self.backbone.classifier[3] = nn.Identity(),
+            
         elif classifier_type == "Attention":
             self.backbone.classifier[1] = AttentionPoolingHead(
                 in_channels=input_size, 
                 num_classes=num_classes
             )
+            self.backbone.classifier[2] = nn.Identity()
+            self.backbone.classifier[3] = nn.Identity()
 
     def forward(self, x):
         return self.backbone(x)
@@ -350,8 +354,8 @@ if __name__ == "__main__":
     torch.manual_seed(42)
 
     # Load a pretrained model and modify it
-    model = WraperModel(num_classes=8, feature_extraction=False)
-    model.load_state_dict(torch.load("saved_model.pt"))
+    model = WraperModel(num_classes=8, feature_extraction=False,batch_norm=True)
+    model.load_state_dict(torch.load("saved_models/OG/1767964689.7960076.pth"),strict=False)
     #model = model
 
     """
@@ -370,17 +374,16 @@ if __name__ == "__main__":
         features.28
     """
 
-    transformation  = F.Compose([
-                                    F.ToImage(),
-                                    F.ToDtype(torch.float32, scale=True),
-                                    F.RandomHorizontalFlip(p=1.),
-                                    F.Resize(size=(256, 256)),
+    transformation  = Transform.Compose([
+                                    Transform.ToImage(),
+                                    Transform.ToDtype(torch.float32, scale=True),
+                                    Transform.RandomHorizontalFlip(p=1.),
+                                    Transform.Resize(size=(256, 256)),
                                 ])
     # Example GradCAM usage
-    dummy_input = Image.open("/home/msiau/data/tmp/jventosa/2425/MIT_large_train/test/highway/art803.jpg")#torch.randn(1, 3, 224, 224)
+    dummy_input = Image.open("/home/msiau/data/tmp/jventosa/2425/MIT_small_train_1/test/coast/bea1.jpg")#torch.randn(1, 3, 224, 224)
     input_image = transformation(dummy_input).unsqueeze(0)
 
-    print(len(model.backbone.features))
 
     target_layers = [model.backbone.features[12]]
     targets = [ClassifierOutputTarget(6)]
@@ -397,6 +400,7 @@ if __name__ == "__main__":
 
     # Plot the result
     plt.imshow(visualization)
+    plt.savefig("visualization.png")
     plt.axis("off")
     plt.show()
 
@@ -425,7 +429,7 @@ if __name__ == "__main__":
 
     ## Plot a concret layer feature map when processing a image thorugh the model
     ## Is not necessary to have gradients
-
+    print(model.backbone)
     with torch.no_grad():
         feature_map = (model.extract_features_from_hooks(x=input_image, layers=["features.12"]))["features.12"]
         feature_map = feature_map.squeeze(0)  # Remove the batch dimension

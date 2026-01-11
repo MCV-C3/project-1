@@ -5,3 +5,5 @@ Week1/cache/*
 *.pt
 *.proof
 */wandb/*
+*/results/*
+*/saved_models/*

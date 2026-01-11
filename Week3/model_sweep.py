@@ -37,81 +37,129 @@ def main():
 
     project = "C3-Week3"
 
-
-    config = {
-        'epochs' : 2_000,
-        'lr' : 0.0001,
-        'batch_size' : 256,
-        'unfreeze' : "All",
-        'weight_decay': 0.0001,
-    }
-        
-
-    torch.manual_seed(42)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    transformation  = F.Compose([
-                                    F.ToImage(),
-                                    F.ToDtype(torch.float32, scale=True),
-                                    F.Resize(size=(224, 224)),
-                                ])
-    
-    base_path = "/home/msiau/data/tmp/jventosa/2425"
-
-    choosen_split = 1
-
-    data_train = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/train", transform=transformation)
-    data_test = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/test", transform=transformation) 
-
-    train_loader = load_data_on_gpu(data_train,device=device,batch_size=config["batch_size"])
-    test_loader = load_data_on_gpu(data_test,device=device,batch_size=128)
-
-    C, H, W = np.array(data_train[0][0]).shape
-
-    
-
-    model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=False,dropout=True,dropout_prob=0.5,classifier_type="FCN")#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
-    
-
-    model = model.to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=config["lr"])
-    num_epochs = config["epochs"]
-
-
-    train_losses, train_accuracies = [], []
-    test_losses, test_accuracies = [], []
-
-    best_test_accuracy = 0.0
-
-    epochs_since_improvement = 0
-
-    best_epoch = 0
-    
-    run_name = f"Agumentations"
-
-
-
     with wandb.init(project=project) as run:
 
-        augmentations = aug.AugmentationSequential(
-        aug.RandomHorizontalFlip(p=run.config.hor_flip),
-        aug.RandomRotation(run.config.ran_rot),
-        aug.RandomVerticalFlip(p=run.config.ver_flip),
-        aug.RandomGrayscale(p=run.config.gray_scale),
-        aug.RandomResizedCrop(
-        size=(224, 224),       
-        scale=(0.8, 1),
-        ratio=(1, 1)),
-        aug.ColorJitter(
-        brightness=run.config.cj_bright,
-        contrast=run.config.cj_con,
-        saturation=run.config.cj_sat,
-        hue=run.config.cj_hue),
-        aug.RandomGaussianBlur(kernel_size=run.config.gb_kernel, sigma=(run.config.gb_sigma_min, run.config.gb_sigma_max))
-        )
+        config = {
+            'epochs' : 2000,
+            'lr' : run.config.learn_rate,
+            'batch_size' : run.config.batch_size,
+            'unfreeze' : "All",
+            'weight_decay': 0.0001,
+            'optimizer': run.config.optimizer,
+            'momentum': run.config.momentum,
+            'batch_norm': run.config.batch_norm,
+            'dropout': run.config.dropout,
+            'dropout_prob': run.config.dropout_prob if run.config.dropout else 0.0,
+        }
 
+        best_augmentations = {"cj_bright":
+     0.495837262449209,
+"cj_con":
+     0.21104613670053696,
+"cj_hue":
+     0.017212853392425453,
+"cj_sat":
+     0.2391866946177022,
+"gb_kernel":
+     9,
+"gb_sigma_max":
+     2.741465766783409,
+"gb_sigma_min":
+     0.029591630066822416,
+"gray_scale":
+     0.018206674887420504,
+"hor_flip":
+     0.25070926882889294,
+"ran_rot":
+     10,
+"ver_flip":
+     0.02239975089933588,
+                    }
+            
+
+        # torch.manual_seed(42)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        transformation  = F.Compose([
+                                        F.ToImage(),
+                                        F.ToDtype(torch.float32, scale=True),
+                                        F.Resize(size=(224, 224)),
+                                    ])
+        
+        base_path = "/home/msiau/data/tmp/jventosa/2425"
+
+        choosen_split = 1
+
+        data_train = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/train", transform=transformation)
+        data_test = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/test", transform=transformation) 
+
+        train_loader = load_data_on_gpu(data_train,device=device,batch_size=config["batch_size"])
+        test_loader = load_data_on_gpu(data_test,device=device,batch_size=128)
+
+        C, H, W = np.array(data_train[0][0]).shape
+
+        
+
+        model = WraperModel(
+            num_classes=8, 
+            feature_extraction=True,
+            batch_norm=config['batch_norm'],
+            dropout=config['dropout'],
+            dropout_prob=config['dropout_prob'],
+            classifier_type="FCN"
+        )
+        
+
+        model = model.to(device)
+        criterion = nn.CrossEntropyLoss()
+        
+        # Select optimizer based on config
+        if config['optimizer'] == 'SGD':
+            optimizer = optim.SGD(model.parameters(), lr=config["lr"], momentum=config['momentum'])
+        elif config['optimizer'] == 'RMSprop':
+            optimizer = optim.RMSprop(model.parameters(), lr=config["lr"], momentum=config['momentum'])
+        elif config['optimizer'] == 'Adagrad':
+            optimizer = optim.Adagrad(model.parameters(), lr=config["lr"])
+        elif config['optimizer'] == 'Adadelta':
+            optimizer = optim.Adadelta(model.parameters(), lr=config["lr"])
+        elif config['optimizer'] == 'Adam':
+            optimizer = optim.Adam(model.parameters(), lr=config["lr"])
+        elif config['optimizer'] == 'Adamax':
+            optimizer = optim.Adamax(model.parameters(), lr=config["lr"])
+        elif config['optimizer'] == 'Nadam':
+            optimizer = optim.NAdam(model.parameters(), lr=config["lr"])
+        
+        num_epochs = config["epochs"]
+
+
+        train_losses, train_accuracies = [], []
+        test_losses, test_accuracies = [], []
+
+        best_test_accuracy = 0.0
+
+        epochs_since_improvement = 0
+
+        best_epoch = 0
+        
+        run_name = f"Hyperparameter_Sweep"
+
+        aug.AugmentationSequential(
+        aug.RandomHorizontalFlip(p=best_augmentations["hor_flip"]),
+        aug.RandomRotation(best_augmentations["ran_rot"]),
+        aug.RandomVerticalFlip(p=best_augmentations["ver_flip"]),
+        aug.RandomGrayscale(p=best_augmentations["gray_scale"]),
+        aug.RandomResizedCrop(
+            size=(224, 224),       
+            scale=(0.8, 1),
+            ratio=(1, 1)),
+        aug.ColorJitter(
+            brightness=best_augmentations["cj_bright"],
+            contrast=best_augmentations["cj_con"],
+            saturation=best_augmentations["cj_sat"],
+            hue=best_augmentations["cj_hue"]),
+        aug.RandomGaussianBlur(kernel_size=best_augmentations["gb_kernel"], sigma=(best_augmentations["gb_sigma_min"], best_augmentations["gb_sigma_max"]))
+        )
 
             
         best_test_accuracy = 0.0
@@ -147,7 +195,7 @@ def main():
             test_losses.append(test_loss)
             test_accuracies.append(test_accuracy)
 
-            run.log({"train_loss": train_loss, "train_ accuracy": train_accuracy, "test_loss": test_loss, "test_accuracy": test_accuracy, "epoch": epoch,})
+            run.log({"train_loss": train_loss, "train_accuracy": train_accuracy, "test_loss": test_loss, "test_accuracy": test_accuracy, "epoch": epoch,})
 
             if test_accuracy > best_test_accuracy:
                 best_test_accuracy = test_accuracy
@@ -209,6 +257,7 @@ def main():
 
             if epoch == num_epochs:
                 continue_train = False 
+        
         run_id = str(time.time())
         os.makedirs(f"saved_models/OG",exist_ok=True)
         torch.save(best_model, f"saved_models/OG/{run_id}.pth")
@@ -226,17 +275,16 @@ if __name__ == '__main__':
         "method": "bayes",
         "metric": {"goal": "maximize", "name": "accuracy"},
         "parameters": {
-            "hor_flip": {"max": 0.5, "min": 0.0},
-            "ver_flip": {"max": 0.5, "min": 0.0},
-            "gray_scale": {"max": 0.5, "min": 0.0},
-            "ran_rot": {"max": 45, "min": 0},
-            "cj_bright": {"max": 0.5, "min": 0.0},
-            "cj_con": {"max": 0.5, "min": 0.0},
-            "cj_sat": {"max": 0.5, "min": 0.0},
-            "cj_hue": {"max": 0.5, "min": 0.0},
-            "gb_kernel": {"values":[1, 3,5, 7,9]},
-            "gb_sigma_min": {"max": 1.0, "min": 0.0},
-            "gb_sigma_max": {"max": 3.0, "min": 1.01},
+            "batch_size": {"values": [16, 32, 64, 128, 256, 512]},
+            "optimizer": {"values": ['SGD', 'RMSprop', 'Adagrad', 'Adadelta', 'Adam', 'Adamax', 'Nadam']},
+            "learn_rate": {"values": [0.0001, 0.001, 0.01, 0.1, 0.2, 0.3]},
+            "momentum": {"values": [0.0, 0.2, 0.4, 0.6, 0.8, 0.9]},
+            
+            # Batch normalization and dropout
+            "batch_norm": {"values": [True, False]},
+            "dropout": {"values": [True, False]},
+            "dropout_prob": {"values": [0.2, 0.3, 0.4, 0.5, 0.6]},
+            
         },
     }
 

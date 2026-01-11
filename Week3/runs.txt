@@ -1,0 +1,36 @@
+
+python main.py --run_name "FCN" --classifier_type "FCN" --model_name "FCN" --gpu_index 0
+python main.py --run_name "MLP" --classifier_type "MLP" --model_name "MLP" --gpu_index 0
+python main.py --run_name "Attention" --classifier_type "Attention" --model_name "Attention" --gpu_index 0
+python main.py --run_name "Unfreeze Last" --unfreeze Last --gpu_index 0
+python main.py --run_name "Unfreeze All" --unfreeze All --gpu_index 0
+
+python main.py --model_name "Squeeze_excite_32" --run_name "Squeeze_excite_32" --squeeze_excite True --reduction 32 --unfreeze All --gpu_index 1
+python main.py --model_name "Squeeze_excite_16" --run_name "Squeeze_excite_16" --squeeze_excite True --reduction 16 --unfreeze All --gpu_index 1
+python main.py --model_name "Squeeze_excite_8" --run_name "Squeeze_excite_8" --squeeze_excite True --reduction 8 --unfreeze All --gpu_index 1
+python main.py --model_name "Squeeze_excite_4" --run_name "Squeeze_excite_4" --squeeze_excite True --reduction 4 --unfreeze All --gpu_index 1
+
+
+python main.py --model_name "Added3Fire" --run_name "Added3Fire" --add_fire 3 --unfreeze All --gpu_index 3
+python main.py --model_name "Added2Fire" --run_name "Added2Fire" --add_fire 2 --unfreeze All --gpu_index 3
+python main.py --model_name "Added1Fire" --run_name "Added1Fire" --add_fire 1 --unfreeze All --gpu_index 3
+
+
+python main.py --model_name "Removed4Fire" --run_name "Removed4Fire" --delete_fire 4 --unfreeze All --gpu_index 4
+python main.py --model_name "Removed3Fire" --run_name "Removed3Fire" --delete_fire 3 --unfreeze All --gpu_index 4
+python main.py --model_name "Removed2Fire" --run_name "Removed2Fire" --delete_fire 2 --unfreeze All --gpu_index 4
+python main.py --model_name "Removed1Fire" --run_name "Removed1Fire" --delete_fire 1 --unfreeze All --gpu_index 4
+
+
+
+python main.py --model_name "Removed5Fire" --run_name "Removed5Fire" --delete_fire 5 --unfreeze All --gpu_index 4
+python main.py --model_name "Removed6Fire" --run_name "Removed6Fire" --delete_fire 6 --unfreeze All --gpu_index 4
+
+python main.py --model_name "OG" --run_name "BatchNorm"  --unfreeze All --batch_normalization True --gpu_index 3
+python main.py --model_name "Og" --run_name "NoBatchNorm" --unfreeze All --batch_normalization False --gpu_index 3
+
+python main.py --model_name "OG" --run_name "NoDropout"  --unfreeze All --dropout False --gpu_index 0
+python main.py --model_name "OG" --run_name "Dropout0.2"  --unfreeze All --dropout_prob 0.2 --gpu_index 0
+python main.py --model_name "Og" --run_name "Dropout0.4" --unfreeze All --dropout_prob 0.4 --gpu_index 0
+python main.py --model_name "Og" --run_name "Dropout0.6" --unfreeze All --dropout_prob 0.6 --gpu_index 0
+python main.py --model_name "Og" --run_name "Dropout0.8" --unfreeze All --dropout_prob 0.8 --gpu_index 0

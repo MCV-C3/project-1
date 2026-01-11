@@ -1,4 +1,5 @@
 from enum import auto
+import time
 from typing import *
 from networkx import freeze
 from torch.utils.data import DataLoader,TensorDataset
@@ -13,6 +14,7 @@ import torchvision.transforms.v2  as F
 from torchviz import make_dot
 import tqdm
 from kornia import augmentation as aug
+import copy
 
 from torchvision.models.squeezenet import Fire
 
@@ -27,7 +29,7 @@ import os
 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 
-os.environ["CUDA_VISIBLE_DEVICES"]="1"
+
 
 # Train function
 def train(model, dataloader, criterion, optimizer, device,augmentations=None):
@@ -191,6 +193,8 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
 
     freeze_count = 1
     fire_count = 0
+    best_unfreeze = 0
+    best_train_accuracy = 0.0
 
     with wandb.init(project=project, config=config,name=run_name) as run:
         epoch = 0
@@ -217,12 +221,14 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
 
             if test_accuracy > best_test_accuracy:
                 best_test_accuracy = test_accuracy
-                best_model = model.state_dict()
+                best_train_accuracy = train_accuracy
+                best_model = copy.deepcopy(model.state_dict())
                 epochs_since_improvement = 0
+                best_unfreeze = fire_count
                 best_epoch = epoch + 1 
                 
 
-            if epochs_since_improvement >= 50:
+            if epochs_since_improvement >= 75:
                 if config["unfreeze"] == "None":
                     print(f"Early stopping at epoch {best_epoch}.")
                     continue_train = False
@@ -273,10 +279,14 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
 
             if epoch == num_epochs:
                 continue_train = False 
+        run_id = str(time.time())
+        os.makedirs(f"saved_models/{config['model_name']}",exist_ok=True)
+        torch.save(best_model, f"saved_models/{config['model_name']}/{run_id}.pth")
+        wandb.log({"best_test_accuracy": best_test_accuracy, "best_train_accuracy": best_train_accuracy, "best_epoch": best_epoch, "best_unfreeze": best_unfreeze, "run_id": run_id})
         
-    torch.save(best_model, "./saved_model.pt")
+        with open(f"saved_models/{config['model_name']}/run_accuracies.txt", "a") as f:
+            f.write(f"{run_id} : {best_test_accuracy:.4f} : {best_train_accuracy:.4f} : {best_epoch} : {best_unfreeze}\n")
 
-    run.log({"BestEpoch": best_epoch, "BestTestAccuracy": best_test_accuracy})
 
 def unfreeze_arg(string):
     if string not in ['None', 'Last', 'All']:
@@ -293,27 +303,30 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--epochs", required=False, type=int,default=1000)
-    parser.add_argument("--lr", required=False, type=int,default=0.001)
+    parser.add_argument("--epochs", required=False, type=int,default=2000)
+    parser.add_argument("--lr", required=False, type=int,default=0.0001)
     parser.add_argument("--batch", required=False, type=int,default=256)
     parser.add_argument("--run_name", required=False, type=str,default="")
     parser.add_argument("--unfreeze", required=False, type=unfreeze_arg,default="None")
     parser.add_argument("--weight_decay", required=False, type=float,default=0.0001)
     parser.add_argument("--optimizer", required=False, type=str,choices=['adam', 'sgd'],default="adam") 
-    parser.add_argument("--learning_rate", required=False, type=float,default=0.001)
+    parser.add_argument("--learning_rate", required=False, type=float,default=0.0001)
     parser.add_argument("--batch_normalization", required=False, type=bool,default=False)
     parser.add_argument("--dropout", required=False, type=bool,default=True)
     parser.add_argument("--dropout_prob", required=False, type=float,default=0.5)
     parser.add_argument("--squeeze_excite", required=False, type=bool,default=False)
     parser.add_argument("--reduction", required=False, type=int,default=16)
     parser.add_argument("--classifier_type", required=False, type=str,choices=['FCN', 'MLP', 'Attention'],default="FCN")
-
-
+    parser.add_argument("--model_name", required=False, type=str,default="OG")
+    parser.add_argument("--add_fire", required=False, type=int,default=0)
+    parser.add_argument("--delete_fire", required=False, type=int,default=0)
+    parser.add_argument("--gpu_index", required=False, type=str,default="1")
 
 
     args = parser.parse_args()
 
-    base_name = args.run_name
+    
+    os.environ["CUDA_VISIBLE_DEVICES"]= args.gpu_index
 
 
     wandb.login()
@@ -322,6 +335,7 @@ if __name__ == "__main__":
 
 
     config = {
+        'model_name': args.model_name,
         'epochs' : args.epochs,
         'lr' : args.lr,
         'batch_size' : args.batch,
@@ -335,9 +349,13 @@ if __name__ == "__main__":
         'add_squeeze_excite': args.squeeze_excite,
         'reduction': args.reduction,
         'classifier_type': args.classifier_type,
-    }
         
-
+    }
+    if args.run_name == "":
+        run_name = f"{config['model_name']}_{config['classifier_type']}_{config['batch_normalization']}_{config['dropout']}_{config['dropout_prob']}_{config['add_squeeze_excite']}_{config['reduction']}"
+    else:
+        run_name = args.run_name
+    
     torch.manual_seed(42)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -363,14 +381,17 @@ if __name__ == "__main__":
     
 
 
-    model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=config["batch_normalization"],dropout=config["dropout"],dropout_prob=config["dropout_prob"])#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
-
+    model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=config["batch_normalization"],dropout=config["dropout"],dropout_prob=config["dropout_prob"],classifier_type=config["classifier_type"])#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
+    
+    
     if config["add_squeeze_excite"]:
         model.add_squeeze_and_excite(reduction=config["reduction"])
 
-    model.delete_last_n_modules(n=3)
-    print(model.backbone.features)
-    # model.add_fire_modules(n=2, sq_channels=64, exp_channels=256)
+    if(args.add_fire > 0):
+        model.add_fire_modules(n=args.add_fire, sq_channels=64, exp_channels=256)
+    if(args.delete_fire > 0):
+        model.delete_last_n_modules(n=args.delete_fire)
+    
     
     model = model.to(device)
 
@@ -393,13 +414,13 @@ if __name__ == "__main__":
     
     num_epochs = config["epochs"]
     
-    run_name = f"{base_name}_{config['epochs']}_{config['lr']}_{config['batch_size']}_{config['unfreeze']}"
+    
     
     augmentations = aug.AugmentationSequential(
         aug.RandomHorizontalFlip(p=0.5),
         aug.RandomRotation(9),
-        aug.RandomVerticalFlip(p=0.05),
-        aug.RandomGrayscale(p=0.1),
+        aug.RandomVerticalFlip(p=0.1),
+        aug.RandomGrayscale(p=0.2),
         aug.RandomResizedCrop(
         size=(224, 224),       
         scale=(0.8, 1),
@@ -413,11 +434,53 @@ if __name__ == "__main__":
         
     )
 
-    """ augmentations = aug.AugmentationSequential(
-        aug.RandomHorizontalFlip(p=0),
-    ) """
+    # augmentations = aug.AugmentationSequential(
+    #     aug.RandomHorizontalFlip(p=0),
+    # )
 
+    best_augmentations = {"cj_bright":
+            0.495837262449209,
+        "cj_con":
+            0.21104613670053696,
+        "cj_hue":
+            0.017212853392425453,
+        "cj_sat":
+            0.2391866946177022,
+        "gb_kernel":
+            9,
+        "gb_sigma_max":
+            2.741465766783409,
+        "gb_sigma_min":
+            0.029591630066822416,
+        "gray_scale":
+            0.018206674887420504,
+        "hor_flip":
+            0.25070926882889294,
+        "ran_rot":
+            10,
+        "ver_flip":
+            0.02239975089933588,
+                    }
+
+    aug.AugmentationSequential(
+        aug.RandomHorizontalFlip(p=best_augmentations["hor_flip"]),
+        aug.RandomRotation(best_augmentations["ran_rot"]),
+        aug.RandomVerticalFlip(p=best_augmentations["ver_flip"]),
+        aug.RandomGrayscale(p=best_augmentations["gray_scale"]),
+        aug.RandomResizedCrop(
+            size=(224, 224),       
+            scale=(0.8, 1),
+            ratio=(1, 1)),
+        aug.ColorJitter(
+            brightness=best_augmentations["cj_bright"],
+            contrast=best_augmentations["cj_con"],
+            saturation=best_augmentations["cj_sat"],
+            hue=best_augmentations["cj_hue"]),
+        aug.RandomGaussianBlur(kernel_size=best_augmentations["gb_kernel"], sigma=(best_augmentations["gb_sigma_min"], best_augmentations["gb_sigma_max"]))
+        )
     
+
+
     train_run(train_loader,test_loader,model, criterion, optimizer, device,num_epochs,config,run_name,augmentations=augmentations)
 
     
