@@ -1,0 +1,11 @@
+name: firstTry
+data_dir: MIT_small_train_1
+img_size: 128
+batch_size: 32
+epochs: 300
+lr: 0.001
+use_bn: true    
+use_dropout: false
+use_gap: false
+depth: 2
+augment: false
