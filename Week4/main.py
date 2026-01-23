@@ -2,7 +2,13 @@ from enum import auto
 import json
 import time
 from typing import *
+from cv2 import transform
 from networkx import freeze
+import json
+
+import torchvision
+torchvision.disable_beta_transforms_warning()
+
 from torch.utils.data import DataLoader,TensorDataset
 from torchvision.datasets import ImageFolder
 import torch
@@ -17,15 +23,24 @@ import tqdm
 from kornia import augmentation as aug
 import copy
 
-
-
 import argparse
 
 from torchvision.transforms import Compose, ToTensor, Normalize, RandomHorizontalFlip, RandomResizedCrop
 
 import wandb
 
-
+MODEL_CONFIGS = {
+    "2ConvOnly": [
+        {"type": "conv", "out": 64, "k": 7, "s": 2, "bn": True},
+        {"type": "maxpool", "k": 3, "s": 2},
+        {"type": "conv", "out": 128, "k": 3, "bn": True},
+    ],
+    "baseline": [
+        {"type": "conv", "out": 32, "bn": True},
+        {"type": "maxpool"},
+        {"type": "conv", "out": 64, "bn": True},
+    ],
+}
 
 # Train function
 def train(model, dataloader, criterion, optimizer, device,augmentations=None):
@@ -240,9 +255,9 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
 
 if __name__ == "__main__":
 
+    you_are_jordi = False
+    you_are_julia = True
     
-
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--epochs", required=False, type=int,default=2000)
@@ -254,11 +269,19 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", required=False, type=float,default=0.0001)
     parser.add_argument("--model_name", required=False, type=str,default="OG")
     parser.add_argument("--gpu_index", required=False, type=str,default="1")
-    parser.add_argument("--model_config", required=False, type=json.loads,default="")
+
+    if you_are_julia:
+        parser.add_argument("--model_config", required=False, type=str, default="baseline")
+    else:
+        parser.add_argument("--model_config", required=False, type=json.loads,default="")
 
     args = parser.parse_args()
 
-    you_are_jordi = True
+    if args.model_config in MODEL_CONFIGS:
+        args.model_config = MODEL_CONFIGS[args.model_config]
+    else:
+        raise ValueError(f"Unknown model_config: {args.model_config}")
+
 
     if you_are_jordi:
         import os
@@ -267,6 +290,10 @@ if __name__ == "__main__":
 
         os.environ["CUDA_VISIBLE_DEVICES"]= args.gpu_index
         base_path = "/home/msiau/data/tmp/jventosa/2425"
+
+    elif you_are_julia:
+        base_path = "C:/Users/User/OneDrive/Escritorio/Master/C3/project-1/mcv/datasets/C3/2425"
+
     else:
         base_path = "valentin_data"
 
@@ -295,32 +322,41 @@ if __name__ == "__main__":
     torch.manual_seed(42)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
+    """
     transformation  = F.Compose([
                                     F.ToImage(),
                                     F.ToDtype(torch.float32, scale=True),
                                     F.Resize(size=(224, 224)),
                                 ])
-    
-    
+    """
+    transformation = Compose([
+        F.Resize((224, 224)),
+        F.ToTensor(),
+    ])
+
 
     choosen_split = 1
 
     data_train = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/train", transform=transformation)
     data_test = ImageFolder(f"{base_path}/MIT_small_train_{choosen_split}/test", transform=transformation) 
+    print("Data loaded from disk.")
 
     train_loader = load_data_on_gpu(data_train,device=device,batch_size=config["batch_size"])
     test_loader = load_data_on_gpu(data_test,device=device,batch_size=128)
+    print("Data loaded onto GPU.")
 
     C, H, W = np.array(data_train[0][0]).shape
 
     model = ModularCNN(num_classes=8,input_channels = 3,config = config["model_config"])
-    
-
     model = model.to(device)
 
+    print("Model initialized.")
+    print(model)
+
     criterion = nn.CrossEntropyLoss()
-    
+
     
     if config["optimizer"] == "adam":
         optimizer = torch.optim.Adam(
@@ -348,7 +384,7 @@ if __name__ == "__main__":
         "cj_sat":
             0.2391866946177022,
         "gb_kernel":
-            9,
+            (9,9),
         "gb_sigma_max":
             2.741465766783409,
         "gb_sigma_min":
