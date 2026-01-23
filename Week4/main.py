@@ -30,16 +30,34 @@ from torchvision.transforms import Compose, ToTensor, Normalize, RandomHorizonta
 import wandb
 
 MODEL_CONFIGS = {
-    "2ConvOnly": [
-        {"type": "conv", "out": 64, "k": 7, "s": 2, "bn": True},
-        {"type": "maxpool", "k": 3, "s": 2},
-        {"type": "conv", "out": 128, "k": 3, "bn": True},
-    ],
     "baseline": [
         {"type": "conv", "out": 32, "bn": True},
         {"type": "maxpool"},
         {"type": "conv", "out": 64, "bn": True},
     ],
+}
+
+CLASSIFIER_CONFIGS = {
+    "linear": {
+        "classifier_type": "linear",
+        "dropout_prob": 0.0,
+    },
+    "dropout": {
+        "classifier_type": "dropout",
+        "dropout_prob": 0.5,
+    },
+    "bn": {
+        "classifier_type": "bn",
+        "dropout_prob": 0.0,
+    },
+    "mlp": {
+        "classifier_type": "mlp",
+        "dropout_prob": 0.5,
+    },
+    "mlp_bn": {
+        "classifier_type": "mlp_bn",
+        "dropout_prob": 0.5,
+    },
 }
 
 # Train function
@@ -269,9 +287,12 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", required=False, type=float,default=0.0001)
     parser.add_argument("--model_name", required=False, type=str,default="OG")
     parser.add_argument("--gpu_index", required=False, type=str,default="1")
+    parser.add_argument("--classifier_config", required=False, type=str, default="linear", choices=list(CLASSIFIER_CONFIGS.keys()))
+
 
     if you_are_julia:
         parser.add_argument("--model_config", required=False, type=str, default="baseline")
+        
     else:
         parser.add_argument("--model_config", required=False, type=json.loads,default="")
 
@@ -281,7 +302,11 @@ if __name__ == "__main__":
         args.model_config = MODEL_CONFIGS[args.model_config]
     else:
         raise ValueError(f"Unknown model_config: {args.model_config}")
-
+    
+    if args.classifier_config in CLASSIFIER_CONFIGS:
+        classifier_cfg = CLASSIFIER_CONFIGS[args.classifier_config]
+    else:
+        raise ValueError(f"Unknown classifier_config: {args.classifier_config}")
 
     if you_are_jordi:
         import os
@@ -303,15 +328,17 @@ if __name__ == "__main__":
 
 
     config = {
-        'model_name': args.model_name,
-        'epochs' : args.epochs,
-        'lr' : args.lr,
-        'batch_size' : args.batch,
-        'weight_decay': args.weight_decay,
-        'optimizer': args.optimizer,
-        'learning_rate': args.learning_rate,
-        'model_config': args.model_config
-    }
+    'model_name': args.model_name,
+    'epochs': args.epochs,
+    'lr': args.lr,
+    'batch_size': args.batch,
+    'weight_decay': args.weight_decay,
+    'optimizer': args.optimizer,
+    'learning_rate': args.learning_rate,
+    'model_config': args.model_config,
+    'classifier_type': classifier_cfg["classifier_type"],
+    'classifier_dropout': classifier_cfg["dropout_prob"],
+}
 
 
     if args.run_name == "":
@@ -349,7 +376,14 @@ if __name__ == "__main__":
 
     C, H, W = np.array(data_train[0][0]).shape
 
-    model = ModularCNN(num_classes=8,input_channels = 3,config = config["model_config"])
+    model = ModularCNN(
+        num_classes=8,
+        input_channels=3,
+        config=config["model_config"],
+        classifier_type=classifier_cfg["classifier_type"],
+        dropout_prob=classifier_cfg["dropout_prob"],
+    )
+
     model = model.to(device)
 
     print("Model initialized.")

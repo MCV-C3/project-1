@@ -104,7 +104,7 @@ class ResidualWrapper(nn.Module):
 # ==========================================
 
 class ModularCNN(nn.Module):
-    def __init__(self, num_classes: int, input_channels: int = 3, config: List[Dict] = None):
+    def __init__(self, num_classes: int, input_channels: int = 3, config: List[Dict] = None,  classifier_type: str = "linear", dropout_prob: float = 0.5):
         """
         Args:
             num_classes: Output dimension.
@@ -119,8 +119,46 @@ class ModularCNN(nn.Module):
         self.features, last_channel_count = self._build_features(input_channels, config)
         
         # 2. Build Classifier (Global Average Pooling + Linear)
+
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier = nn.Linear(last_channel_count, num_classes)
+        self.classifier_type = classifier_type
+
+        if classifier_type == "linear":
+            self.classifier = nn.Linear(last_channel_count, num_classes)
+            
+
+        elif classifier_type == "dropout":
+            self.classifier = nn.Sequential(
+                nn.Dropout(dropout_prob),
+                nn.Linear(last_channel_count, num_classes)
+            )
+
+        elif classifier_type == "bn":
+            self.classifier = nn.Sequential(
+                nn.BatchNorm1d(last_channel_count),
+                nn.Linear(last_channel_count, num_classes)
+            )
+
+        elif classifier_type == "mlp":
+            self.classifier = nn.Sequential(
+                nn.Linear(last_channel_count, last_channel_count // 2),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout_prob),
+                nn.Linear(last_channel_count // 2, num_classes)
+            )
+
+        elif classifier_type == "mlp_bn":
+            self.classifier = nn.Sequential(
+                nn.BatchNorm1d(last_channel_count),
+                nn.Linear(last_channel_count, last_channel_count // 2),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout_prob),
+                nn.Linear(last_channel_count // 2, num_classes)
+            )
+
+        else:
+            raise ValueError(f"Unknown classifier_type: {classifier_type}")
+
 
     def _build_features(self, current_channels, config):
         layers = []
