@@ -99,28 +99,149 @@ class ResidualWrapper(nn.Module):
     def forward(self, x):
         return self.block(x) + self.shortcut(x)
 
+
 # ==========================================
-# 2. THE MODULAR MODEL WRAPPER
+# CLASSIFICATION HEADS
+# ==========================================
+
+class GlobalAvgPoolHead(nn.Module):
+    """Original: Global Average Pooling + Linear"""
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(in_channels, num_classes)
+    
+    def forward(self, x):
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+class MaxPoolHead(nn.Module):
+    """Global Max Pooling + Linear (zero additional parameters vs avg pool)"""
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.pool = nn.AdaptiveMaxPool2d((1, 1))
+        self.fc = nn.Linear(in_channels, num_classes)
+    
+    def forward(self, x):
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+class MixedPoolHead(nn.Module):
+    """Concatenates Global Average + Max Pooling, then Linear"""
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.max_pool = nn.AdaptiveMaxPool2d((1, 1))
+        self.fc = nn.Linear(in_channels * 2, num_classes)
+    
+    def forward(self, x):
+        avg = self.avg_pool(x)
+        max_p = self.max_pool(x)
+        x = torch.cat([avg, max_p], dim=1)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+class MLPHead(nn.Module):
+    """Shallow MLP: GAP -> FC -> ReLU -> Dropout -> FC"""
+    def __init__(self, in_channels, num_classes, hidden_dim=512, dropout_prob=0.3):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.mlp = nn.Sequential(
+            nn.Linear(in_channels, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout_prob),
+            nn.Linear(hidden_dim, num_classes)
+        )
+    
+    def forward(self, x):
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        x = self.mlp(x)
+        return x
+
+
+class GeMPoolHead(nn.Module):
+    """Generalized Mean Pooling + Linear (1 learnable param per channel)"""
+    def __init__(self, in_channels, num_classes, p=3.0, eps=1e-6):
+        super().__init__()
+        self.p = nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+        self.fc = nn.Linear(in_channels, num_classes)
+    
+    def forward(self, x):
+        # GeM pooling: (1/HW * sum(x^p))^(1/p)
+        x = x.clamp(min=self.eps).pow(self.p)
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = x.pow(1.0 / self.p)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+class AttentionPoolHead(nn.Module):
+    """Learnable attention weights across spatial dimensions + Linear"""
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.attention = nn.Sequential(
+            nn.Conv2d(in_channels, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        self.fc = nn.Linear(in_channels, num_classes)
+    
+    def forward(self, x):
+        # Compute attention weights
+        attn_weights = self.attention(x)  # [B, 1, H, W]
+        
+        # Apply attention and pool
+        x = x * attn_weights
+        x = F.adaptive_avg_pool2d(x, (1, 1))
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+
+# ==========================================
+# THE MODULAR MODEL WRAPPER
 # ==========================================
 
 class ModularCNN(nn.Module):
-    def __init__(self, num_classes: int, input_channels: int = 3, config: List[Dict] = None):
+    def __init__(self, num_classes: int, input_channels: int = 3, 
+                 config: List[Dict] = None, head_type: str = 'gap',
+                 head_params: Dict = None):
         """
         Args:
             num_classes: Output dimension.
             input_channels: Channels in input image (usually 3).
             config: A list of dictionaries describing the layers.
-                    Example: [{'type': 'conv', 'out': 32, 'k': 3, 'bn': True}, ...]
+            head_type: Type of classification head. Options:
+                - 'gap': Global Average Pooling (original)
+                - 'max': Global Max Pooling
+                - 'mixed': Mixed Average + Max Pooling
+                - 'mlp': Shallow MLP head
+                - 'gem': Generalized Mean Pooling
+                - 'attention': Attention Pooling
+            head_params: Optional dictionary of parameters for the head (e.g., hidden_dim for MLP)
         """
         super().__init__()
         self.config = config
+        self.head_type = head_type
         
         # 1. Build Feature Extractor
         self.features, last_channel_count = self._build_features(input_channels, config)
         
-        # 2. Build Classifier (Global Average Pooling + Linear)
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier = nn.Linear(last_channel_count, num_classes)
+        # 2. Build Classifier Head
+        head_params = head_params or {}
+        self.classifier = self._build_classifier_head(
+            head_type, last_channel_count, num_classes, head_params
+        )
 
     def _build_features(self, current_channels, config):
         layers = []
@@ -144,22 +265,18 @@ class ModularCNN(nn.Module):
             
             elif l_type == 'inception':
                 block = InceptionBlock(current_channels, out_c)
-                # Inception usually maintains or changes channels internally,
-                # here we force output to be whatever is requested.
             
             elif l_type == 'maxpool':
                 k = layer_cfg.get('k', 2)
                 s = layer_cfg.get('s', 2)
                 block = nn.MaxPool2d(kernel_size=k, stride=s)
-                # MaxPool doesn't change channels
                 out_c = current_channels 
 
             elif l_type == 'attention':
-                # Adds an attention mechanism without changing geometry
                 block = SEAttention(current_channels)
                 out_c = current_channels
 
-            # --- Wrap with Residual if requested ---
+            # Wrap with Residual if requested
             if residual and l_type not in ['maxpool', 'attention']:
                 block = ResidualWrapper(block, current_channels, out_c)
 
@@ -169,26 +286,46 @@ class ModularCNN(nn.Module):
 
         return nn.Sequential(*layers), current_channels
 
+    def _build_classifier_head(self, head_type, in_channels, num_classes, head_params):
+        """Factory method to create different classification heads"""
+        
+        if head_type == 'gap':
+            return GlobalAvgPoolHead(in_channels, num_classes)
+        
+        elif head_type == 'max':
+            return MaxPoolHead(in_channels, num_classes)
+        
+        elif head_type == 'mixed':
+            return MixedPoolHead(in_channels, num_classes)
+        
+        elif head_type == 'mlp':
+            hidden_dim = head_params.get('hidden_dim', 256)
+            dropout_prob = head_params.get('dropout_prob', 0.5)
+            return MLPHead(in_channels, num_classes, hidden_dim, dropout_prob)
+        
+        elif head_type == 'gem':
+            p = head_params.get('p', 3.0)
+            return GeMPoolHead(in_channels, num_classes, p=p)
+        
+        elif head_type == 'attention':
+            return AttentionPoolHead(in_channels, num_classes)
+        
+        else:
+            raise ValueError(f"Unknown head_type: {head_type}. Choose from: "
+                           "'gap', 'max', 'mixed', 'mlp', 'gem', 'attention'")
+
     def forward(self, x):
         x = self.features(x)
-        x = self.global_pool(x)
-        x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
-
-    # just for analysis
 
     def extract_grad_cam(self, input_image: torch.Tensor, 
                          target_layer_idx: int = -1, 
                          target_category: int = None):
-        """
-        Extracts GradCAM heatmap.
-        target_layer_idx: Index of layer in self.features to visualize (default: last conv layer)
-        """
+        """Extracts GradCAM heatmap."""
         if GradCAMPlusPlus is None:
             raise ImportError("pytorch_grad_cam not installed.")
 
-        # Identify target layer. If -1, find the last Conv2d or Inception block
         if target_layer_idx == -1:
             target_layer = [self.features[-1]]
         else:
@@ -209,7 +346,6 @@ class ModularCNN(nn.Module):
         
         for idx, layer in enumerate(self.features):
             x = layer(x)
-            # Only keep maps with spatial dimensions > 1
             if x.dim() == 4 and x.shape[2] > 1:
                 maps.append(x)
                 names.append(f"Layer_{idx}_{layer.__class__.__name__}")
@@ -217,7 +353,7 @@ class ModularCNN(nn.Module):
 
 
 # ==========================================
-# 4. EXPERIMENT HELPER (The "Parameter Wrapper")
+# EXPERIMENT HELPER
 # ==========================================
 
 def create_experiment_model(
@@ -229,21 +365,24 @@ def create_experiment_model(
     dropout_prob: float = 0.3,
     use_residual: bool = False,
     use_inception: bool = False,
-    use_attention: bool = False
+    use_attention: bool = False,
+    head_type: str = 'gap',
+    head_params: Dict = None
 ) -> ModularCNN:
     """
     Factory function to generate a model based on high-level experiment flags.
-    This replaces hardcoding and enables your flowchart iteration.
+    
+    New Args:
+        head_type: Classification head type ('gap', 'max', 'mixed', 'mlp', 'gem', 'attention')
+        head_params: Optional parameters for the head (e.g., {'hidden_dim': 256} for MLP)
     """
     
     config = []
     c = base_channels
     
     for i in range(num_conv_layers):
-        # 1. Choose Block Type
         layer_type = 'inception' if use_inception else 'conv'
         
-        # 2. Define Layer Config
         layer_cfg = {
             'type': layer_type,
             'out': c,
@@ -253,46 +392,76 @@ def create_experiment_model(
         }
         config.append(layer_cfg)
         
-        # 3. Add Attention if requested (e.g., after every block or specifically placed)
         if use_attention:
             config.append({'type': 'attention'})
 
-        # 4. Add Pooling every 2 layers to reduce spatial size
         if i % 2 != 0: 
             config.append({'type': 'maxpool'})
-            c *= 2 # Double channels after pooling
+            c *= 2
 
-    # Print the generated architecture for verification
-    print(f"--- Generating Model with {len(config)} config steps ---")
+    print(f"--- Generating Model with {len(config)} config steps and '{head_type}' head ---")
     
-    return ModularCNN(num_classes=num_classes, config=config)
+    return ModularCNN(num_classes=num_classes, config=config, 
+                     head_type=head_type, head_params=head_params)
 
 
 # ==========================================
-# 5. USAGE EXAMPLE
+# USAGE EXAMPLES
 # ==========================================
 if __name__ == "__main__":
-    # Simulate an experiment from your flowchart
+    print("=" * 60)
+    print("Testing Different Classification Heads")
+    print("=" * 60)
     
-    # "Initial test with 3 convolutional layers"
-    model_exp1 = create_experiment_model(num_classes=10, num_conv_layers=3, use_bn=False)
+    dummy_input = torch.randn(2, 3, 224, 224)
     
-    # "Add batch normalization + Residuals"
-    model_exp2 = create_experiment_model(num_classes=10, num_conv_layers=4, use_bn=True, use_residual=True)
+    # 1. Original GAP Head
+    print("\n1. Global Average Pooling Head")
+    model_gap = create_experiment_model(num_classes=10, num_conv_layers=3, head_type='gap')
+    out = model_gap(dummy_input)
+    print(f"   Output shape: {out.shape}")
+    print(f"   Parameters: {sum(p.numel() for p in model_gap.parameters()):,}")
     
-    # "Test inception blocks + Attention"
-    model_exp3 = create_experiment_model(
+    # 2. Max Pool Head
+    print("\n2. Global Max Pooling Head")
+    model_max = create_experiment_model(num_classes=10, num_conv_layers=3, head_type='max')
+    out = model_max(dummy_input)
+    print(f"   Output shape: {out.shape}")
+    print(f"   Parameters: {sum(p.numel() for p in model_max.parameters()):,}")
+    
+    # 3. Mixed Pool Head
+    print("\n3. Mixed (Avg+Max) Pooling Head")
+    model_mixed = create_experiment_model(num_classes=10, num_conv_layers=3, head_type='mixed')
+    out = model_mixed(dummy_input)
+    print(f"   Output shape: {out.shape}")
+    print(f"   Parameters: {sum(p.numel() for p in model_mixed.parameters()):,}")
+    
+    # 4. MLP Head
+    print("\n4. MLP Head (with custom hidden dim)")
+    model_mlp = create_experiment_model(
         num_classes=10, 
         num_conv_layers=3, 
-        base_channels=64,
-        use_inception=True, 
-        use_attention=True
+        head_type='mlp',
+        head_params={'hidden_dim': 256, 'dropout_prob': 0.3}
     )
-
-    # Test Forward Pass
-    dummy_input = torch.randn(1, 3, 224, 224)
-    output = model_exp3(dummy_input)
-    print(f"Output shape: {output.shape}")
-
-    # Test GradCAM (Mock)
-    # cam = model_exp3.extract_grad_cam(dummy_input)
+    out = model_mlp(dummy_input)
+    print(f"   Output shape: {out.shape}")
+    print(f"   Parameters: {sum(p.numel() for p in model_mlp.parameters()):,}")
+    
+    # 5. GeM Pool Head
+    print("\n5. GeM Pooling Head")
+    model_gem = create_experiment_model(num_classes=10, num_conv_layers=3, head_type='gem')
+    out = model_gem(dummy_input)
+    print(f"   Output shape: {out.shape}")
+    print(f"   Parameters: {sum(p.numel() for p in model_gem.parameters()):,}")
+    
+    # 6. Attention Pool Head
+    print("\n6. Attention Pooling Head")
+    model_attn = create_experiment_model(num_classes=10, num_conv_layers=3, head_type='attention')
+    out = model_attn(dummy_input)
+    print(f"   Output shape: {out.shape}")
+    print(f"   Parameters: {sum(p.numel() for p in model_attn.parameters()):,}")
+    
+    print("\n" + "=" * 60)
+    print("All heads tested successfully!")
+    print("=" * 60)

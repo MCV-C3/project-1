@@ -246,7 +246,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--epochs", required=False, type=int,default=2000)
-    parser.add_argument("--lr", required=False, type=int,default=0.0001)
+    parser.add_argument("--lr", required=False, type=float,default=0.0001)
     parser.add_argument("--batch", required=False, type=int,default=128)
     parser.add_argument("--run_name", required=False, type=str,default="")
     parser.add_argument("--weight_decay", required=False, type=float,default=0.0001)
@@ -255,6 +255,8 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", required=False, type=str,default="OG")
     parser.add_argument("--gpu_index", required=False, type=str,default="1")
     parser.add_argument("--model_config", required=False, type=json.loads,default="")
+    parser.add_argument("--head_type", required=False, type=str,default="gap")
+    parser.add_argument("--head_params", required=False, type=json.loads,default={})
 
     args = parser.parse_args()
 
@@ -283,7 +285,9 @@ if __name__ == "__main__":
         'weight_decay': args.weight_decay,
         'optimizer': args.optimizer,
         'learning_rate': args.learning_rate,
-        'model_config': args.model_config
+        'model_config': args.model_config,
+        'head_type': args.head_type,
+        'head_params': args.head_params,
     }
 
 
@@ -314,7 +318,7 @@ if __name__ == "__main__":
 
     C, H, W = np.array(data_train[0][0]).shape
 
-    model = ModularCNN(num_classes=8,input_channels = 3,config = config["model_config"])
+    model = ModularCNN(num_classes=8,input_channels = 3,config = config["model_config"],head_type=config["head_type"],head_params=config["head_params"])
     
 
     model = model.to(device)
