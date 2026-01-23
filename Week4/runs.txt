@@ -1,1 +1,34 @@
-python main.py --model_name "2ConvOnly" --run_name "2ConvOnly" --model_config '[{"type":"conv","out":64,"k":7,"s":2,"bn":true},{"type":"maxpool","k":3,"s":2},{"type":"conv","out":128,"k":3,"bn":true}]'  --gpu_index 0 
+# Run 1: Baseline (no BN, no dropout, no residual)
+srun --ntasks=1 --gpus=3 torchrun --nproc_per_node=3 main.py --distributed \
+    --model_name "Baseline_NoBN_NoDropout_NoResidual" \
+    --run_name "Run1_Baseline" \
+    --model_config '[{"type":"conv","out":64,"k":3,"bn":false,"dropout":0.0,"residual":false},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":128,"k":3,"bn":false,"dropout":0.0,"residual":false},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":256,"k":3,"bn":false,"dropout":0.0,"residual":false}]' \
+    --epochs 2000 --batch 128 --learning_rate 0.0003 --weight_decay 0.0001 --optimizer adam
+
+# Run 2: With Batch Normalization only
+srun --ntasks=1 --gpus=3 torchrun --nproc_per_node=3 main.py --distributed \
+    --model_name "WithBN_NoDropout_NoResidual" \
+    --run_name "Run2_BN_Only" \
+    --model_config '[{"type":"conv","out":64,"k":3,"bn":true,"dropout":0.0,"residual":false},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":128,"k":3,"bn":true,"dropout":0.0,"residual":false},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":256,"k":3,"bn":true,"dropout":0.0,"residual":false}]' \
+    --epochs 2000 --batch 128 --learning_rate 0.0003 --weight_decay 0.0001 --optimizer adam
+
+# Run 3: With Dropout only
+srun --ntasks=1 --gpus=3 torchrun --nproc_per_node=3 main.py --distributed \
+    --model_name "NoBN_WithDropout_NoResidual" \
+    --run_name "Run3_Dropout_Only" \
+    --model_config '[{"type":"conv","out":64,"k":3,"bn":false,"dropout":0.3,"residual":false},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":128,"k":3,"bn":false,"dropout":0.3,"residual":false},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":256,"k":3,"bn":false,"dropout":0.3,"residual":false}]' \
+    --epochs 2000 --batch 128 --learning_rate 0.0003 --weight_decay 0.0001 --optimizer adam
+
+# Run 4: With Residual Connections only
+srun --ntasks=1 --gpus=3 torchrun --nproc_per_node=3 main.py --distributed \
+    --model_name "NoBN_NoDropout_WithResidual" \
+    --run_name "Run4_Residual_Only" \
+    --model_config '[{"type":"conv","out":64,"k":3,"bn":false,"dropout":0.0,"residual":true},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":128,"k":3,"bn":false,"dropout":0.0,"residual":true},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":256,"k":3,"bn":false,"dropout":0.0,"residual":true}]' \
+    --epochs 2000 --batch 128 --learning_rate 0.0003 --weight_decay 0.0001 --optimizer adam
+
+# Run 5: With All (BN + Dropout + Residual)
+srun --ntasks=1 --gpus=3 torchrun --nproc_per_node=3 main.py --distributed \
+    --model_name "WithBN_WithDropout_WithResidual" \
+    --run_name "Run5_All_Features" \
+    --model_config '[{"type":"conv","out":64,"k":3,"bn":true,"dropout":0.3,"residual":true},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":128,"k":3,"bn":true,"dropout":0.3,"residual":true},{"type":"maxpool","k":2,"s":2},{"type":"conv","out":256,"k":3,"bn":true,"dropout":0.3,"residual":true}]' \
+    --epochs 2000 --batch 128 --learning_rate 0.0003 --weight_decay 0.0001 --optimizer adam 
