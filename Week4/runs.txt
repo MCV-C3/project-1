@@ -1,0 +1,1 @@
+python main.py --model_name "2ConvOnly" --run_name "2ConvOnly" --model_config '[{"type":"conv","out":64,"k":7,"s":2,"bn":true},{"type":"maxpool","k":3,"s":2},{"type":"conv","out":128,"k":3,"bn":true}]'  --gpu_index 0 
