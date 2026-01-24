@@ -12,11 +12,62 @@ from typing import *
 from torchview import draw_graph
 from graphviz import Source
 
+from torchvision.models.squeezenet import Fire
+
+
 from PIL import Image
-import torchvision.transforms.v2  as F
+import torchvision.transforms.v2  as Transform
 import numpy as np 
 
 import pdb
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class AttentionPoolingHead(nn.Module):
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.attention_mask = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels // 2, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels // 2, 1, kernel_size=1)
+        )
+        
+        self.classifier = nn.Linear(in_channels, num_classes)
+
+    def forward(self, x):
+        attn_weights = self.attention_mask(x) 
+
+        b, c, h, w = attn_weights.shape
+        attn_weights = F.softmax(attn_weights.view(b, c, -1), dim=-1)
+        attn_weights = attn_weights.view(b, c, h, w)
+        
+
+        weighted_features = x * attn_weights
+        pooled_features = weighted_features.sum(dim=(2, 3)) 
+        
+        return self.classifier(pooled_features)
+
+
+
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.fc1 = nn.Linear(channels, channels // reduction, bias=False)
+        self.fc2 = nn.Linear(channels // reduction, channels, bias=False)
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = F.adaptive_avg_pool2d(x, 1).view(b, c)
+        y = F.relu(self.fc1(y), inplace=True)
+        y = torch.sigmoid(self.fc2(y)).view(b, c, 1, 1)
+        return x * y
 
 
 class SimpleModel(nn.Module):
@@ -51,20 +102,131 @@ class SimpleModel(nn.Module):
 
 
 class WraperModel(nn.Module):
-    def __init__(self, num_classes: int, feature_extraction: bool=True):
+    def __init__(self, num_classes: int, feature_extraction: bool=True,batch_norm: bool=True, dropout: bool = True,dropout_prob: float = 0.5,classifier_type: str = "FCN"):
         super(WraperModel, self).__init__()
 
+        self.num_classes = num_classes
+        self.classifier_type = classifier_type
+
+
         # Load pretrained VGG16 model
-        self.backbone = models.vgg16(weights='IMAGENET1K_V1')
+        self.backbone = models.squeezenet1_0(weights='IMAGENET1K_V1')
         
+        if batch_norm:
+            self._add_batch_norm_to_backbone()
+
+
+        if dropout:
+            self.backbone.classifier[0] = nn.Dropout(p=dropout_prob)
+        else:
+            self.backbone.classifier[0] = nn.Identity()
+
         if feature_extraction:
             self.set_parameter_requires_grad(feature_extracting=feature_extraction)
+        
+                
+                
+        final_conv = self.backbone.classifier[1] 
+        self.add_classifier(classifier_type,final_conv.in_channels, num_classes)
 
-        # Modify the classifier for the number of classes
-        self.backbone.classifier[-1] = nn.Linear(self.backbone.classifier[-1].in_features, num_classes)
+
+    def add_classifier(self,classifier_type,input_size, num_classes: int):
+        if classifier_type == "FCN":
+            self.backbone.classifier[1] = nn.Conv2d(
+                in_channels=input_size,
+                out_channels=num_classes,
+                kernel_size=1
+            )
+        elif classifier_type == "MLP":
+            
+            self.backbone.classifier[1] = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(input_size*13*13, 512),
+                nn.ReLU(),
+                nn.Dropout(0.3),  
+            )
+            self.backbone.classifier[2] = nn.Linear(512, num_classes)
+            self.backbone.classifier[3] = nn.Identity(),
+            
+        elif classifier_type == "Attention":
+            self.backbone.classifier[1] = AttentionPoolingHead(
+                in_channels=input_size, 
+                num_classes=num_classes
+            )
+            self.backbone.classifier[2] = nn.Identity()
+            self.backbone.classifier[3] = nn.Identity()
 
     def forward(self, x):
         return self.backbone(x)
+
+    def add_squeeze_and_excite(self,reduction):
+        new_layers = []
+
+        for layer in self.backbone.features:
+            new_layers.append(layer)
+
+            if isinstance(layer, Fire):
+                out_channels = (
+                    layer.expand1x1.out_channels +
+                    layer.expand3x3.out_channels
+                )
+                new_layers.append(SEBlock(out_channels, reduction))
+
+        self.backbone.features = nn.Sequential(*new_layers)
+        
+
+
+    def add_fire_modules(self, n, sq_channels, exp_channels):
+
+        
+        for _ in range(n):
+            # Get the input channels from the last module in the sequence
+            in_channels = self._get_last_output_channels()
+            
+            new_fire = Fire(in_channels, sq_channels, exp_channels, exp_channels)
+            
+            self.backbone.features.add_module(f"fire_{len(self.backbone.features)}", new_fire)
+        
+
+    def delete_last_n_modules(self, n):
+
+        new_features = list(self.backbone.features)[:-n]
+        self.features = nn.Sequential(*new_features)
+        self.add_classifier(self.classifier_type,self._get_last_output_channels(), self.num_classes)
+
+    def _get_last_output_channels(self):
+
+        last_layer = self.backbone.features[-1]
+        print(last_layer)
+        if isinstance(last_layer, Fire): # Specifically for Fire modules
+            return last_layer.expand1x1.out_channels + \
+                   last_layer.expand3x3.out_channels
+        elif hasattr(last_layer, 'out_channels'):
+            return last_layer.out_channels
+
+
+    def _add_batch_norm_to_backbone(self):
+        """
+        Iterates through Fire modules and adds BN after the squeeze and expand convs.
+        """
+        for name, module in self.backbone.features.named_children():
+
+            if isinstance(module, models.squeezenet.Fire):
+
+                module.squeeze = nn.Sequential(
+                    module.squeeze,
+                    nn.BatchNorm2d(module.squeeze.out_channels)
+                )
+
+                module.expand1x1 = nn.Sequential(
+                    module.expand1x1,
+                    nn.BatchNorm2d(module.expand1x1.out_channels)
+                )
+
+                module.expand3x3 = nn.Sequential(
+                    module.expand3x3,
+                    nn.BatchNorm2d(module.expand3x3.out_channels)
+                )
     
 
     def extract_feature_maps(self, input_image:torch.Tensor):
@@ -149,6 +311,26 @@ class WraperModel(nn.Module):
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
+        
+        
+    def remove_fire_blocks(self,n):
+        fire_indices = [
+            i for i, m in enumerate(self.backbone.features)
+            if isinstance(m, Fire)
+        ]
+
+        remove_idxs = set(fire_indices[-n:])
+
+        new_features = nn.Sequential(
+            *[
+                m for i, m in enumerate(self.backbone.features)
+                if i not in remove_idxs
+            ]
+        )
+
+        self.backbone.features = new_features
+        
+        self.add_classifier(self.classifier_type,self._get_last_output_channels(), self.num_classes)
 
 
     def extract_grad_cam(self, input_image: torch.Tensor, 
@@ -172,8 +354,8 @@ if __name__ == "__main__":
     torch.manual_seed(42)
 
     # Load a pretrained model and modify it
-    model = WraperModel(num_classes=8, feature_extraction=False)
-    #model.load_state_dict(torch.load("saved_model.pt"))
+    model = WraperModel(num_classes=8, feature_extraction=False,batch_norm=True)
+    model.load_state_dict(torch.load("saved_models/OG/1767964689.7960076.pth"),strict=False)
     #model = model
 
     """
@@ -192,19 +374,18 @@ if __name__ == "__main__":
         features.28
     """
 
-    transformation  = F.Compose([
-                                    F.ToImage(),
-                                    F.ToDtype(torch.float32, scale=True),
-                                    F.RandomHorizontalFlip(p=1.),
-                                    F.Resize(size=(256, 256)),
+    transformation  = Transform.Compose([
+                                    Transform.ToImage(),
+                                    Transform.ToDtype(torch.float32, scale=True),
+                                    Transform.RandomHorizontalFlip(p=1.),
+                                    Transform.Resize(size=(256, 256)),
                                 ])
     # Example GradCAM usage
-    dummy_input = Image.open("/home/cboned/data/Master/MIT_split/test/highway/art803.jpg")#torch.randn(1, 3, 224, 224)
+    dummy_input = Image.open("/home/msiau/data/tmp/jventosa/2425/MIT_small_train_1/test/coast/bea1.jpg")#torch.randn(1, 3, 224, 224)
     input_image = transformation(dummy_input).unsqueeze(0)
 
 
-
-    target_layers = [model.backbone.features[26]]
+    target_layers = [model.backbone.features[12]]
     targets = [ClassifierOutputTarget(6)]
     
     image = torch.from_numpy(np.array(dummy_input)).cpu().numpy()
@@ -219,6 +400,7 @@ if __name__ == "__main__":
 
     # Plot the result
     plt.imshow(visualization)
+    plt.savefig("visualization.png")
     plt.axis("off")
     plt.show()
 
@@ -242,14 +424,14 @@ if __name__ == "__main__":
         ax.axis("off")
         ax.set_title(f"{layer_names[i].split('(')[0]}_{i}", fontsize=10)
 
-
+    plt.savefig("feature_maps.png")
     plt.show()
 
     ## Plot a concret layer feature map when processing a image thorugh the model
     ## Is not necessary to have gradients
-
+    print(model.backbone)
     with torch.no_grad():
-        feature_map = (model.extract_features_from_hooks(x=input_image, layers=["features.28"]))["features.28"]
+        feature_map = (model.extract_features_from_hooks(x=input_image, layers=["features.12"]))["features.12"]
         feature_map = feature_map.squeeze(0)  # Remove the batch dimension
         print(feature_map.shape)
         processed_feature_map, _ = torch.min(feature_map, 0) 
@@ -257,10 +439,11 @@ if __name__ == "__main__":
     # Plot the result
     plt.imshow(processed_feature_map, cmap="gray")
     plt.axis("off")
+    plt.savefig("processed_feature_map.png")
     plt.show()
 
 
 
     ## Draw the model
-    model_graph = draw_graph(model, input_size=(1, 3, 224, 224), device='meta', expand_nested=True, roll=True)
-    model_graph.visual_graph.render(filename="test", format="png", directory="./Week3")
+    # model_graph = draw_graph(model, input_size=(1, 3, 224, 224), device='meta', expand_nested=True, roll=True)
+    # model_graph.visual_graph.render(filename="test", format="png", directory="./Week3")

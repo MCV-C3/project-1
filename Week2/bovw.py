@@ -38,11 +38,15 @@ class BOVW():
         elif detector_type == 'DENSE_SIFT':
             # Dense SIFT uses SIFT to describe points we create manually
             self.detector = cv2.SIFT_create()
+        elif detector_type == "NEURAL":
+            self.detector = None
         else:
             raise ValueError("Detector must be 'SIFT', 'AKAZE', 'ORB', or 'DENSE_SIFT'")
         
         self.codebook_algo = MiniBatchKMeans(n_clusters=self.codebook_size, **codebook_kwargs)
-        
+    
+
+
     def _extract_features(self, image: Literal["H", "W", "C"]) -> Tuple:
         """
         Extracts features. 

@@ -1,7 +1,11 @@
+import code
 from enum import auto
+import json
 import time
 from typing import *
+from cv2 import threshold
 from networkx import freeze
+from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader,TensorDataset
 from torchvision.datasets import ImageFolder
 import torch
@@ -9,14 +13,13 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
-from models import SimpleModel, WraperModel
+from model import ModularCNN
 import torchvision.transforms.v2  as F
 from torchviz import make_dot
 import tqdm
 from kornia import augmentation as aug
 import copy
 
-from torchvision.models.squeezenet import Fire
 
 
 import argparse
@@ -25,14 +28,10 @@ from torchvision.transforms import Compose, ToTensor, Normalize, RandomHorizonta
 
 import wandb
 
-import os
-
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-
 
 
 # Train function
-def train(model, dataloader, criterion, optimizer, device,augmentations=None):
+def train(model, dataloader, criterion, optimizer, device,augmentations=None,masks = None):
     model.train()
     train_loss = 0.0
     correct, total = 0, 0
@@ -50,6 +49,12 @@ def train(model, dataloader, criterion, optimizer, device,augmentations=None):
         # Backward pass and optimization
         optimizer.zero_grad()
         loss.backward()
+        if masks != None:
+            for name, param in model.named_parameters():
+                if name in masks:
+                    param.grad *= masks[name]
+
+
         optimizer.step()
 
         # Track loss and accuracy
@@ -61,6 +66,46 @@ def train(model, dataloader, criterion, optimizer, device,augmentations=None):
     avg_loss = train_loss / total
     accuracy = correct / total
     return avg_loss, accuracy
+
+def quantized_train(model, dataloader, criterion, optimizer,cb_optimizer, device,augmentations=None,codebooks = None, indices_map= None,masks = None):
+    model.train()
+    train_loss = 0.0
+    correct, total = 0, 0
+
+    for inputs, labels in dataloader:
+
+        inputs, labels = inputs.to(device), labels.to(device)
+        if augmentations is not None:
+            inputs = augmentations(inputs)
+
+        # Forward pass
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        cb_optimizer.zero_grad()
+        
+        update_codebooks(model, codebooks, indices_map, masks)
+
+        cb_optimizer.step()
+
+        # Reconstruct weights from updated centroids
+        reconstruct_weights(model, codebooks, indices_map, masks)
+
+
+        optimizer.step()
+
+        # Track loss and accuracy
+        train_loss += loss.item() * inputs.size(0)
+        _, predicted = outputs.max(1)
+        correct += (predicted == labels).sum().item()
+        total += labels.size(0)
+
+    avg_loss = train_loss / total
+    accuracy = correct / total
+    return avg_loss, accuracy
+
 
 
 def test(model, dataloader, criterion, device):
@@ -146,6 +191,106 @@ def plot_computational_graph(model: torch.nn.Module, input_size: tuple, filename
 
     print(f"Computational graph saved as {filename}")
 
+def prune_model(model, sensitivity):
+    masks = {}
+    for name, param in model.named_parameters():
+        if 'weight' in name:
+            threshold = torch.std(param.data) * sensitivity
+            masks[name] = torch.abs(param.data) > threshold
+            param.data *= masks[name]
+    
+    return masks
+
+def count_pruned_from_masks(masks):
+    pruned = 0
+
+    for mask in masks.values():
+        pruned += (~mask).sum().item()
+
+    return pruned
+
+@torch.no_grad()
+def init_codebooks(model, masks, bits=2):
+    """
+    Initializes codebooks (centroids) and index maps for each weight tensor.
+    """
+    codebooks = {}
+    indices_map = {}
+
+    n_clusters = 2 ** bits
+
+    for name, param in model.named_parameters():
+        if 'weight' not in name:
+            continue
+
+        weight = param.data
+        mask = masks[name]
+
+        # Extract non-zero (unpruned) weights
+        sparse_weights = weight[mask].view(-1, 1).cpu().numpy()
+
+        if sparse_weights.shape[0] < n_clusters:
+            continue  # too small to cluster safely
+
+        kmeans = KMeans(n_clusters=n_clusters, n_init=10)
+        kmeans.fit(sparse_weights)
+
+        # Store centroids as trainable torch parameters
+        codebooks[name] = torch.nn.Parameter(
+            torch.from_numpy(kmeans.cluster_centers_).float().to(weight.device)
+        )
+
+        # Assign each weight to nearest centroid
+        full_indices = torch.full_like(weight, -1, dtype=torch.long)
+        assigned = torch.from_numpy(
+            kmeans.predict(weight[mask].view(-1, 1).cpu().numpy())
+            ).long().to(weight.device)
+
+
+        full_indices[mask] = assigned
+        indices_map[name] = full_indices
+
+        # Replace weights with centroid values
+        param.data[mask] = codebooks[name][assigned].view(-1)
+
+    return codebooks, indices_map
+
+def update_codebooks(model, codebooks, indices_map, masks):
+    """
+    Aggregate weight gradients into centroid gradients.
+    """
+    for name, param in model.named_parameters():
+        if name not in codebooks:
+            continue
+
+        grad = param.grad
+        if grad is None:
+            continue
+
+        indices = indices_map[name]
+        mask = masks[name]
+
+        cb = codebooks[name]
+        cb_grad = torch.zeros_like(cb)
+
+        for k in range(cb.shape[0]):
+            sel = (indices == k) & mask
+            if sel.any():
+                cb_grad[k] = grad[sel].mean()
+
+        cb.grad = cb_grad
+
+@torch.no_grad()
+def reconstruct_weights(model, codebooks, indices_map, masks):
+    for name, param in model.named_parameters():
+        if name not in codebooks:
+            continue
+
+        indices = indices_map[name]
+        mask = masks[name]
+
+        param.data[mask] = codebooks[name][indices[mask]].view(-1)
+
 
 def load_data_on_gpu(data,device,batch_size=256):
 
@@ -164,18 +309,6 @@ def load_data_on_gpu(data,device,batch_size=256):
     return DataLoader(dataset_gpu, batch_size=256, shuffle=True, num_workers=0)
 
 
-def unfreeze_layers(model, freeze_count):
-    freezed = True
-    while freezed:
-        last_fire = model.backbone.features[-freeze_count]
-        if isinstance(last_fire, Fire):
-            for param in last_fire.parameters():
-                param.requires_grad = True
-            freezed = False
-            freeze_count += 1
-        else:
-            freeze_count += 1
-    return freeze_count
 
 
 def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_epochs,config,run_name,augmentations):
@@ -191,10 +324,20 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
 
     best_epoch = 0
 
-    freeze_count = 1
-    fire_count = 0
-    best_unfreeze = 0
     best_train_accuracy = 0.0
+
+    masks = None
+
+    codebooks = None
+
+    indices_map = None
+
+    pruning_improved = False
+
+
+    optimal_pruning_steps = 0
+    cb_optimizer = None
+    pruned_parameters = 0
 
     with wandb.init(project=project, config=config,name=run_name) as run:
         epoch = 0
@@ -209,7 +352,10 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
             epochs_since_improvement += 1
 
 
-            train_loss, train_accuracy = train(model, train_loader, criterion, optimizer, device,augmentations=augmentations)
+            if codebooks == None:
+                train_loss, train_accuracy = train(model, train_loader, criterion, optimizer, device,augmentations=augmentations,masks=masks)
+            else:
+                train_loss, train_accuracy = quantized_train(model, train_loader, criterion, optimizer,cb_optimizer, device,augmentations=augmentations,masks=masks,codebooks=codebooks,indices_map=indices_map)
             test_loss, test_accuracy = test(model, test_loader, criterion, device)
 
             train_losses.append(train_loss)
@@ -224,51 +370,39 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
                 best_train_accuracy = train_accuracy
                 best_model = copy.deepcopy(model.state_dict())
                 epochs_since_improvement = 0
-                best_unfreeze = fire_count
                 best_epoch = epoch + 1 
+                pruning_improved = True
+
                 
 
             if epochs_since_improvement >= 75:
-                if config["unfreeze"] == "None":
-                    print(f"Early stopping at epoch {best_epoch}.")
-                    continue_train = False
-                    
-                elif config["unfreeze"] == "Last":
-                    model.load_state_dict(best_model)
-                    print("Unfreezing last layer")
-                    if fire_count < 1:
-                        last_fire = model.backbone.features[-1]
-                        
-                        for param in last_fire.parameters():
-                            param.requires_grad = True
-                        fire_count += 1
+                if config["pruning"]:
+                    if pruning_improved:
+                        print("pruning...")
+                        model.load_state_dict(best_model)
+                        masks = prune_model(model, 0.8)
+                        optimal_pruning_steps += 1
                         epochs_since_improvement = 0
+                        pruning_improved = False
+                    else:
+                        if config["quantization"] and codebooks == None:
+                            print("quantizing...")
+                            codebooks, indices_map = init_codebooks(model, masks, bits=config["quantization_bits"])
+                            cb_optimizer = torch.optim.Adam(codebooks.values(), lr=1e-3)
+                            epochs_since_improvement = 0
+                        else:
+                            print(f"Early stopping at epoch {best_epoch}.")
+                            continue_train = False
+                else:
+                    if config["quantization"] and codebooks == None:
+                            print("quantizing...")
+                            codebooks, indices_map = init_codebooks(model, masks, bits=config["quantization_bits"])
+                            cb_optimizer = torch.optim.Adam(codebooks.values(), lr=1e-3)
+                            epochs_since_improvement = 0
+                    else:
+                        print(f"Early stopping at epoch {best_epoch}.")
+                        continue_train = False
 
-                    else:
-                        print(f"Early stopping at epoch {best_epoch}.")
-                        continue_train = False
-                    
-                elif config["unfreeze"] == "All":
-                    
-                    if fire_count < 8:
-                        model.load_state_dict(best_model)
-                        freeze_count = unfreeze_layers(model, freeze_count)
-                        fire_count += 1
-                        epochs_since_improvement = 0
-                    else:
-                        print(f"Early stopping at epoch {best_epoch}.")
-                        continue_train = False
-                        
-                else: 
-                    if freeze_count <= config["unfreeze"] :
-                        model.load_state_dict(best_model)
-                        freeze_count = unfreeze_layers(model, freeze_count)
-                        fire_count += 1
-                        epochs_since_improvement = 0
-                    else:
-                        print(f"Early stopping at epoch {best_epoch}.")
-                        continue_train = False
-                
 
             print(f"Epoch {epoch + 1}/{num_epochs} - "
                 f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
@@ -279,20 +413,25 @@ def train_run(train_loader,test_loader,model, criterion, optimizer, device,num_e
 
             if epoch == num_epochs:
                 continue_train = False 
+
+        total_params = sum(p.numel() for p in model.parameters())
+        
+        total_learnable_params = sum(p.numel() for p in model.parameters())
+        if masks != None:
+            pruned_parameters = count_pruned_from_masks(masks)
+        else:
+            pruned_parameters = 0
+
+
+
+
         run_id = str(time.time())
         os.makedirs(f"saved_models/{config['model_name']}",exist_ok=True)
         torch.save(best_model, f"saved_models/{config['model_name']}/{run_id}.pth")
-        wandb.log({"best_test_accuracy": best_test_accuracy, "best_train_accuracy": best_train_accuracy, "best_epoch": best_epoch, "best_unfreeze": best_unfreeze, "run_id": run_id})
+        wandb.log({"best_test_accuracy": best_test_accuracy, "best_train_accuracy": best_train_accuracy, "total_parameters": total_params,"total_learnable_parameters": total_learnable_params,"pruned_parameters": pruned_parameters,"pruning_steps":optimal_pruning_steps,"best_epoch": best_epoch,"run_id": run_id})
         
         with open(f"saved_models/{config['model_name']}/run_accuracies.txt", "a") as f:
-            f.write(f"{run_id} : {best_test_accuracy:.4f} : {best_train_accuracy:.4f} : {best_epoch} : {best_unfreeze}\n")
-
-
-def unfreeze_arg(string):
-    if string not in ['None', 'Last', 'All']:
-        return int(string)
-    else:
-        return string
+            f.write(f"{run_id} : {best_test_accuracy:.4f} : {best_train_accuracy:.4f} : {best_epoch}\n")
 
 
 
@@ -303,35 +442,39 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--epochs", required=False, type=int,default=2000)
-    parser.add_argument("--lr", required=False, type=int,default=0.0001)
-    parser.add_argument("--batch", required=False, type=int,default=256)
+    parser.add_argument("--epochs", required=False, type=int,default=10_000)
+    parser.add_argument("--lr", required=False, type=float,default=0.0001)
+    parser.add_argument("--batch", required=False, type=int,default=128)
     parser.add_argument("--run_name", required=False, type=str,default="")
-    parser.add_argument("--unfreeze", required=False, type=unfreeze_arg,default="None")
     parser.add_argument("--weight_decay", required=False, type=float,default=0.0001)
     parser.add_argument("--optimizer", required=False, type=str,choices=['adam', 'sgd'],default="adam") 
     parser.add_argument("--learning_rate", required=False, type=float,default=0.0001)
-    parser.add_argument("--batch_normalization", required=False, type=bool,default=False)
-    parser.add_argument("--dropout", required=False, type=bool,default=True)
-    parser.add_argument("--dropout_prob", required=False, type=float,default=0.5)
-    parser.add_argument("--squeeze_excite", required=False, type=bool,default=False)
-    parser.add_argument("--reduction", required=False, type=int,default=16)
-    parser.add_argument("--classifier_type", required=False, type=str,choices=['FCN', 'MLP', 'Attention'],default="FCN")
     parser.add_argument("--model_name", required=False, type=str,default="OG")
-    parser.add_argument("--add_fire", required=False, type=int,default=0)
-    parser.add_argument("--delete_fire", required=False, type=int,default=0)
     parser.add_argument("--gpu_index", required=False, type=str,default="1")
-
+    parser.add_argument("--model_config", required=False, type=json.loads,default="")
+    parser.add_argument("--head_type", required=False, type=str,default="gap")
+    parser.add_argument("--head_params", required=False, type=json.loads,default={})
+    parser.add_argument("--pruning", required=False, type=bool,default=False)
+    parser.add_argument("--quantization", required=False, type=bool,default=False)
+    parser.add_argument("--quantization_bits", required=False, type=int,default=2)
 
     args = parser.parse_args()
 
-    
-    os.environ["CUDA_VISIBLE_DEVICES"]= args.gpu_index
+    you_are_jordi = True
 
+    if you_are_jordi:
+        import os
+
+        os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+
+        os.environ["CUDA_VISIBLE_DEVICES"]= args.gpu_index
+        base_path = "/home/msiau/data/tmp/jventosa/2425"
+    else:
+        base_path = "valentin_data"
 
     wandb.login()
 
-    project = "C3-Week3"
+    project = "C3-Week4"
 
 
     config = {
@@ -339,20 +482,20 @@ if __name__ == "__main__":
         'epochs' : args.epochs,
         'lr' : args.lr,
         'batch_size' : args.batch,
-        'unfreeze' : args.unfreeze,
         'weight_decay': args.weight_decay,
         'optimizer': args.optimizer,
         'learning_rate': args.learning_rate,
-        'batch_normalization': args.batch_normalization,
-        'dropout': args.dropout,
-        'dropout_prob': args.dropout_prob,
-        'add_squeeze_excite': args.squeeze_excite,
-        'reduction': args.reduction,
-        'classifier_type': args.classifier_type,
-        
+        'model_config': args.model_config,
+        'head_type': args.head_type,
+        'head_params': args.head_params,
+        'pruning': args.pruning,
+        'quantization': args.quantization,
+        'quantization_bits': args.quantization_bits
     }
+
+
     if args.run_name == "":
-        run_name = f"{config['model_name']}_{config['classifier_type']}_{config['batch_normalization']}_{config['dropout']}_{config['dropout_prob']}_{config['add_squeeze_excite']}_{config['reduction']}"
+        run_name = str(time.time())
     else:
         run_name = args.run_name
     
@@ -366,7 +509,7 @@ if __name__ == "__main__":
                                     F.Resize(size=(224, 224)),
                                 ])
     
-    base_path = "/home/msiau/data/tmp/jventosa/2425"
+    
 
     choosen_split = 1
 
@@ -378,21 +521,9 @@ if __name__ == "__main__":
 
     C, H, W = np.array(data_train[0][0]).shape
 
+    model = ModularCNN(num_classes=8,input_channels = 3,config = config["model_config"],head_type=config["head_type"],head_params=config["head_params"])
     
 
-
-    model = WraperModel(num_classes=8, feature_extraction=True,batch_norm=config["batch_normalization"],dropout=config["dropout"],dropout_prob=config["dropout_prob"],classifier_type=config["classifier_type"])#SimpleModel(input_d=C*H*W, hidden_d=300, output_d=8)
-    
-    
-    if config["add_squeeze_excite"]:
-        model.add_squeeze_and_excite(reduction=config["reduction"])
-
-    if(args.add_fire > 0):
-        model.add_fire_modules(n=args.add_fire, sq_channels=64, exp_channels=256)
-    if(args.delete_fire > 0):
-        model.delete_last_n_modules(n=args.delete_fire)
-    
-    
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
@@ -413,30 +544,7 @@ if __name__ == "__main__":
     
     
     num_epochs = config["epochs"]
-    
-    
-    
-    augmentations = aug.AugmentationSequential(
-        aug.RandomHorizontalFlip(p=0.5),
-        aug.RandomRotation(9),
-        aug.RandomVerticalFlip(p=0.1),
-        aug.RandomGrayscale(p=0.2),
-        aug.RandomResizedCrop(
-        size=(224, 224),       
-        scale=(0.8, 1),
-        ratio=(1, 1)),
-        aug.ColorJitter(
-        brightness=0.2,
-        contrast=0.2,
-        saturation=0.2,
-        hue=0.05),
-        aug.RandomGaussianBlur(kernel_size=5, sigma=(0.1, 0.6))
-        
-    )
 
-    # augmentations = aug.AugmentationSequential(
-    #     aug.RandomHorizontalFlip(p=0),
-    # )
 
     best_augmentations = {"cj_bright":
             0.495837262449209,
@@ -462,7 +570,7 @@ if __name__ == "__main__":
             0.02239975089933588,
                     }
 
-    aug.AugmentationSequential(
+    augmentations = aug.AugmentationSequential(
         aug.RandomHorizontalFlip(p=best_augmentations["hor_flip"]),
         aug.RandomRotation(best_augmentations["ran_rot"]),
         aug.RandomVerticalFlip(p=best_augmentations["ver_flip"]),
