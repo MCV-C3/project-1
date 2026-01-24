@@ -84,6 +84,49 @@ class InceptionBlock(nn.Module):
         y3 = self.b3(x)
         y4 = self.b4(x)
         return torch.cat([y1, y2, y3, y4], dim=1)
+class DepthwiseSeparableConv(nn.Module):
+    """
+    Depthwise Separable Convolution Block:
+    Depthwise Conv -> BN -> ReLU -> Pointwise Conv -> BN -> ReLU
+    """
+    def __init__(self, in_c, out_c, kernel_size=3, stride=1, padding=1, use_bn=True):
+        super().__init__()
+
+        layers = []
+
+        # Depthwise convolution
+        layers.append(
+            nn.Conv2d(
+                in_c, in_c,
+                kernel_size=kernel_size,
+                stride=stride,
+                padding=padding,
+                groups=in_c, 
+                bias=False
+            )
+        )
+
+        if use_bn:
+            layers.append(nn.BatchNorm2d(in_c))
+        layers.append(nn.ReLU(inplace=True))
+
+        # Pointwise convolution (1x1)
+        layers.append(
+            nn.Conv2d(
+                in_c, out_c,
+                kernel_size=1,
+                bias=False
+            )
+        )
+
+        if use_bn:
+            layers.append(nn.BatchNorm2d(out_c))
+        layers.append(nn.ReLU(inplace=True))
+
+        self.block = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.block(x)
 
 class ResidualWrapper(nn.Module):
     """Wraps any block to add a residual connection"""
@@ -179,6 +222,12 @@ class ModularCNN(nn.Module):
                 s = layer_cfg.get('s', 1)
                 p = layer_cfg.get('p', 1)
                 block = ConvBlock(current_channels, out_c, k, s, p, bn, drop)
+            
+            elif l_type == 'dwconv':   
+                k = layer_cfg.get('k', 3)
+                s = layer_cfg.get('s', 1)
+                p = layer_cfg.get('p', 1)
+                block = DepthwiseSeparableConv(current_channels, out_c, k, s, p, bn)
             
             elif l_type == 'inception':
                 block = InceptionBlock(current_channels, out_c)

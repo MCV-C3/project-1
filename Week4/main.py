@@ -5,6 +5,7 @@ from typing import *
 from cv2 import transform
 from networkx import freeze
 import json
+import os
 
 import torchvision
 torchvision.disable_beta_transforms_warning()
@@ -30,12 +31,82 @@ from torchvision.transforms import Compose, ToTensor, Normalize, RandomHorizonta
 import wandb
 
 MODEL_CONFIGS = {
+    # =========================
+    # BASELINE (reference)
+    # =========================
     "baseline": [
         {"type": "conv", "out": 32, "bn": True},
         {"type": "maxpool"},
         {"type": "conv", "out": 64, "bn": True},
     ],
+
+    # =========================
+    # TINY MODELS (standard conv)
+    # =========================
+    "tiny": [
+        {"type": "conv", "out": 8, "bn": True},
+        {"type": "maxpool"},
+        {"type": "conv", "out": 16, "bn": True},
+    ],
+
+    # =========================
+    # DEPTHWISE SEPARABLE MODELS
+    # =========================
+    "tiny_dw": [
+        {"type": "dwconv", "out": 8, "bn": True},
+        {"type": "maxpool"},
+        {"type": "dwconv", "out": 16, "bn": True},
+    ],
+
+    "ultra_tiny_dw": [
+        {"type": "dwconv", "out": 4, "bn": True},
+        {"type": "maxpool"},
+        {"type": "dwconv", "out": 8, "bn": True},
+    ],
+
+    # =========================
+    # WIDER DEPTHWISE MODELS
+    # =========================
+    "tiny_dw_8_24": [
+        {"type": "dwconv", "out": 8, "bn": True},
+        {"type": "maxpool"},
+        {"type": "dwconv", "out": 24, "bn": True},
+    ],
+
+    "tiny_dw_12_24": [
+        {"type": "dwconv", "out": 12, "bn": True},
+        {"type": "maxpool"},
+        {"type": "dwconv", "out": 24, "bn": True},
+    ],
+
+    # =========================
+    # DEEP DEPTHWISE MODEL
+    # =========================
+    "tiny_dw_deep": [
+        {"type": "dwconv", "out": 8, "bn": True},
+        {"type": "maxpool"},
+        {"type": "dwconv", "out": 16, "bn": True},
+        {"type": "dwconv", "out": 16, "bn": True},
+    ],
+
+    # =========================
+    # EARLY STRIDE (AGGRESSIVE DOWNSAMPLING)
+    # =========================
+    "tiny_dw_stride": [
+        {"type": "dwconv", "out": 8, "bn": True, "s": 2},
+        {"type": "dwconv", "out": 16, "bn": True},
+    ],
+
+    # =========================
+    # HYBRID (Conv → DWConv)
+    # =========================
+    "tiny_hybrid": [
+        {"type": "conv", "out": 8, "bn": True},
+        {"type": "maxpool"},
+        {"type": "dwconv", "out": 16, "bn": True},
+    ],
 }
+
 
 CLASSIFIER_CONFIGS = {
     "linear": {
@@ -317,7 +388,8 @@ if __name__ == "__main__":
         base_path = "/home/msiau/data/tmp/jventosa/2425"
 
     elif you_are_julia:
-        base_path = "C:/Users/User/OneDrive/Escritorio/Master/C3/project-1/mcv/datasets/C3/2425"
+        # base_path = "C:/Users/User/OneDrive/Escritorio/Master/C3/project-1/mcv/datasets/C3/2425"
+        base_path = "/DATA/home/jgarcia/C3COURSE/project-1/mcv/datasets/C3/2425"
 
     else:
         base_path = "valentin_data"

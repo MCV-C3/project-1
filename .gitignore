@@ -3,3 +3,7 @@ places_reduced/*
 Week1/cache/*
 mcv/*
 Week4/wandb/*
+Week4/saved_models/*
+run_all.sh
+Week4/experiments.log
+Week4/experiments.txt
